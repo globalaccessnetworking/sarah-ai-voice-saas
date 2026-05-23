@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { Textarea } from "@/components/ui/textarea";
 
 interface TelephonyViewProps {
     initialNumbers: PhoneNumber[];
@@ -30,7 +31,10 @@ export default function TelephonyView({ initialNumbers, initialRules, trunks, ag
     // Dispatcher State
     const [targetPhone, setTargetPhone] = useState("");
     const [selectedAgentId, setSelectedAgentId] = useState("");
+    const [selectedTrunkId, setSelectedTrunkId] = useState("");
     const [contactName, setContactName] = useState("");
+    const [openingMessage, setOpeningMessage] = useState("");
+    const [callGoal, setCallGoal] = useState("Test outbound AI call");
     const [isDialing, setIsDialing] = useState(false);
 
     const handleDeleteNumber = async (id: string) => {
@@ -41,7 +45,6 @@ export default function TelephonyView({ initialNumbers, initialRules, trunks, ag
             if (!res.ok) throw new Error("Failed to delete number");
 
             setNumbers((prev) => prev.filter((n) => n.id !== id));
-            // Also optimistic delete of any rules using this number
             setRules((prev) => prev.filter((r) => r.phoneNumberId !== id));
         } catch (error) {
             alert("Error deleting number.");
@@ -79,6 +82,9 @@ export default function TelephonyView({ initialNumbers, initialRules, trunks, ag
                 body: JSON.stringify({
                     phoneNumber: targetPhone,
                     agentId: selectedAgentId,
+                    trunkId: selectedTrunkId || undefined,
+                    openingMessage: openingMessage || undefined,
+                    callGoal: callGoal || undefined,
                     contactData: { Name: contactName || "Customer" }
                 }),
             });
@@ -90,9 +96,9 @@ export default function TelephonyView({ initialNumbers, initialRules, trunks, ag
                 description: `Room: ${data.roomName}`,
             });
 
-            // Clear fields on success
-            setTargetPhone("");
-            setContactName("");
+            // Keep form mostly filled for easy re-testing, just clear the phone if you want
+            // setTargetPhone("");
+            // setContactName("");
         } catch (error: any) {
             toast.error("Dialing Failed", { description: error.message });
             console.error(error);
@@ -254,63 +260,104 @@ export default function TelephonyView({ initialNumbers, initialRules, trunks, ag
                                 Manual Outbound Dialing
                             </CardTitle>
                         </CardHeader>
-                        <CardContent className="space-y-6 max-w-md">
-                            <div className="space-y-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="phone" className="text-slate-300">Target Phone Number</Label>
-                                    <Input
-                                        id="phone"
-                                        placeholder="+1234567890"
-                                        className="bg-slate-950 border-slate-800 text-white font-mono"
-                                        value={targetPhone}
-                                        onChange={(e) => setTargetPhone(e.target.value)}
-                                    />
-                                </div>
+                        <CardContent className="space-y-6 max-w-2xl">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="space-y-4">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="phone" className="text-slate-300">Target Phone Number</Label>
+                                        <Input
+                                            id="phone"
+                                            placeholder="+1234567890"
+                                            className="bg-slate-950 border-slate-800 text-white font-mono"
+                                            value={targetPhone}
+                                            onChange={(e) => setTargetPhone(e.target.value)}
+                                        />
+                                    </div>
 
-                                <div className="space-y-2">
-                                    <Label htmlFor="agent" className="text-slate-300">Select AI Agent</Label>
-                                    <Select value={selectedAgentId} onValueChange={(v) => setSelectedAgentId(v || "")}>
-                                        <SelectTrigger id="agent" className="bg-slate-950 border-slate-800 text-white">
-                                            <SelectValue placeholder="Select an agent" />
-                                        </SelectTrigger>
-                                        <SelectContent className="bg-slate-900 border-slate-800 text-white">
-                                            {agents.map(agent => (
-                                                <SelectItem key={agent.id} value={agent.id}>
-                                                    {agent.name}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="agent" className="text-slate-300">Select AI Agent</Label>
+                                        <Select value={selectedAgentId} onValueChange={(v) => setSelectedAgentId(v || "")}>
+                                            <SelectTrigger id="agent" className="bg-slate-950 border-slate-800 text-white">
+                                                <SelectValue placeholder="Select an agent" />
+                                            </SelectTrigger>
+                                            <SelectContent className="bg-slate-900 border-slate-800 text-white">
+                                                {agents.map(agent => (
+                                                    <SelectItem key={agent.id} value={agent.id}>
+                                                        {agent.name}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    
+                                    <div className="space-y-2">
+                                        <Label htmlFor="trunk" className="text-slate-300">SIP Trunk (Caller ID) - Optional</Label>
+                                        <Select value={selectedTrunkId} onValueChange={(v) => setSelectedTrunkId(v || "")}>
+                                            <SelectTrigger id="trunk" className="bg-slate-950 border-slate-800 text-white">
+                                                <SelectValue placeholder="Default Trunk" />
+                                            </SelectTrigger>
+                                            <SelectContent className="bg-slate-900 border-slate-800 text-white">
+                                                <SelectItem value="">Default Trunk</SelectItem>
+                                                {trunks.map(t => (
+                                                    <SelectItem key={t.id} value={t.id}>
+                                                        {t.name}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
                                 </div>
-
-                                <div className="space-y-2">
-                                    <Label htmlFor="name" className="text-slate-300">Contact Name (Optional)</Label>
-                                    <Input
-                                        id="name"
-                                        placeholder="John Doe"
-                                        className="bg-slate-950 border-slate-800 text-white"
-                                        value={contactName}
-                                        onChange={(e) => setContactName(e.target.value)}
-                                    />
+                                <div className="space-y-4">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="name" className="text-slate-300">Contact Name (Optional)</Label>
+                                        <Input
+                                            id="name"
+                                            placeholder="John Doe"
+                                            className="bg-slate-950 border-slate-800 text-white"
+                                            value={contactName}
+                                            onChange={(e) => setContactName(e.target.value)}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="goal" className="text-slate-300">Call Goal (Optional)</Label>
+                                        <Input
+                                            id="goal"
+                                            placeholder="Test outbound AI call"
+                                            className="bg-slate-950 border-slate-800 text-white"
+                                            value={callGoal}
+                                            onChange={(e) => setCallGoal(e.target.value)}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="openingMsg" className="text-slate-300">Opening Message Override (Optional)</Label>
+                                        <Textarea
+                                            id="openingMsg"
+                                            placeholder="Hi, this is a test call..."
+                                            className="bg-slate-950 border-slate-800 text-white resize-none"
+                                            rows={2}
+                                            value={openingMessage}
+                                            onChange={(e) => setOpeningMessage(e.target.value)}
+                                        />
+                                    </div>
                                 </div>
-
-                                <Button
-                                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white h-12 text-lg font-semibold shadow-lg shadow-emerald-900/20"
-                                    onClick={handleDial}
-                                    disabled={isDialing || !targetPhone || !selectedAgentId}
-                                >
-                                    {isDialing ? (
-                                        <>Dialing...</>
-                                    ) : (
-                                        <>
-                                            <Play className="w-5 h-5 mr-2 fill-current" />
-                                            Start AI Call
-                                        </>
-                                    )}
-                                </Button>
                             </div>
+                            
+                            <Button
+                                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white h-12 text-lg font-semibold shadow-lg shadow-emerald-900/20"
+                                onClick={handleDial}
+                                disabled={isDialing || !targetPhone || !selectedAgentId}
+                            >
+                                {isDialing ? (
+                                    <>Dialing...</>
+                                ) : (
+                                    <>
+                                        <Play className="w-5 h-5 mr-2 fill-current" />
+                                        Start AI Call
+                                    </>
+                                )}
+                            </Button>
 
-                            <p className="text-xs text-slate-500 italic">
+                            <p className="text-xs text-slate-500 italic text-center">
                                 Note: This will create a LiveKit room and trigger a SIP participant from your outbound
                                 trunk to dial the target number. The agent will greet using the contact name if provided.
                             </p>
@@ -337,3 +384,4 @@ export default function TelephonyView({ initialNumbers, initialRules, trunks, ag
         </div>
     );
 }
+
