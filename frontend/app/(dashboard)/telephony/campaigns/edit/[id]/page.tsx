@@ -1,16 +1,17 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { ArrowLeft, Save, Upload, FileText, Settings, Users, Phone, Loader2, XCircle, CheckCircle2, ChevronRight, ChevronLeft } from "lucide-react";
+import { useRouter, useParams } from "next/navigation";
+import { ArrowLeft, Save, Loader2, CheckCircle2, ChevronRight, ChevronLeft } from "lucide-react";
 import Link from "next/link";
-import Papa from "papaparse";
 
-export default function CreateCampaignPage() {
+export default function EditCampaignPage() {
     const router = useRouter();
+    const { id } = useParams();
+    
     const [saving, setSaving] = useState(false);
     const [step, setStep] = useState(1);
-    const totalSteps = 5;
+    const totalSteps = 4;
 
     // Data from APIs
     const [agents, setAgents] = useState<any[]>([]);
@@ -45,13 +46,6 @@ export default function CreateCampaignPage() {
         vicidialIngroup: "",
     });
 
-    const [numbers, setNumbers] = useState<{ phone: string, name?: string, companyName?: string }[]>([]);
-
-    const [manualNumber, setManualNumber] = useState("");
-    const [manualName, setManualName] = useState("");
-
-    const [csvFile, setCsvFile] = useState<File | null>(null);
-
     useEffect(() => {
         const fetchData = async () => {
             try {
@@ -59,7 +53,7 @@ export default function CreateCampaignPage() {
                 const agentsRes = await fetch("/api/agents");
                 if (agentsRes.ok) {
                     const agentsData = await agentsRes.json();
-                    setAgents(agentsData.filter((a: any) => a.status === 'running' || a.status === 'stopped')); // show available agents
+                    setAgents(agentsData.filter((a: any) => a.status === 'running' || a.status === 'stopped'));
                 }
                 
                 // Fetch Trunks
@@ -68,14 +62,46 @@ export default function CreateCampaignPage() {
                     const trunksData = await trunksRes.json();
                     setTrunks(trunksData.filter((t: any) => t.type === 'outbound' || t.type === 'both'));
                 }
+
+                // Fetch Campaign
+                if (id) {
+                    const campRes = await fetch(`/api/campaigns/${id}`);
+                    if (campRes.ok) {
+                        const campData = await campRes.json();
+                        setFormData({
+                            name: campData.name || "",
+                            description: campData.description || "",
+                            campaignType: campData.campaignType || "progressive",
+                            agentId: campData.agentId || "",
+                            openingMessage: campData.openingMessage || "",
+                            callGoal: campData.callGoal || "",
+                            script: campData.script || "",
+                            sipTrunkId: campData.sipTrunkId || "",
+                            callerId: campData.callerId || "",
+                            concurrency: campData.concurrency || 1,
+                            callDelaySeconds: campData.callDelaySeconds || 0,
+                            dialingMode: campData.dialingMode || "progressive",
+                            retryAttempts: campData.retryAttempts || 3,
+                            retryDelaySeconds: campData.retryDelaySeconds || 3600,
+                            timezone: campData.timezone || "UTC",
+                            callingWindowStart: campData.callingWindowStart || "09:00",
+                            callingWindowEnd: campData.callingWindowEnd || "18:00",
+                            daysOfWeek: campData.daysOfWeek || ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+                            recordingEnabled: campData.recordingEnabled !== undefined ? campData.recordingEnabled : true,
+                            transcriptionEnabled: campData.transcriptionEnabled !== undefined ? campData.transcriptionEnabled : true,
+                            vicidialCampaignId: campData.vicidialCampaignId || "",
+                            vicidialIngroup: campData.vicidialIngroup || "",
+                        });
+                    }
+                }
             } catch (error) {
-                console.error("Error fetching dependencies:", error);
+                console.error("Error fetching data:", error);
             } finally {
                 setLoadingData(false);
             }
         };
         fetchData();
-    }, []);
+    }, [id]);
 
     const selectedAgent = agents.find(a => a.id === formData.agentId);
     const selectedTrunk = trunks.find(t => t.id === formData.sipTrunkId);
@@ -88,78 +114,24 @@ export default function CreateCampaignPage() {
             return;
         }
 
-        if (numbers.length === 0 && formData.campaignType !== 'vicidial') {
-            alert("Please add at least one lead before saving.");
-            setStep(4);
-            return;
-        }
-
         setSaving(true);
         try {
-            const res = await fetch("/api/campaigns", {
-                method: "POST",
+            const res = await fetch(`/api/campaigns/${id}`, {
+                method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    ...formData,
-                    numbers
-                }),
+                body: JSON.stringify(formData),
             });
 
             if (res.ok) {
                 router.push("/telephony/campaigns");
             } else {
-                alert("Failed to create campaign.");
+                alert("Failed to update campaign.");
             }
         } catch (error) {
-            console.error("Error creating campaign:", error);
-            alert("Error creating campaign.");
+            console.error("Error updating campaign:", error);
+            alert("Error updating campaign.");
         } finally {
             setSaving(false);
-        }
-    };
-
-    const handleAddManual = () => {
-        if (manualNumber) {
-            setNumbers([...numbers, { phone: manualNumber, name: manualName }]);
-            setManualNumber("");
-            setManualName("");
-        }
-    };
-
-    const handleRemoveNumber = (index: number) => {
-        setNumbers(numbers.filter((_, i) => i !== index));
-    };
-
-    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (file) {
-            setCsvFile(file);
-            Papa.parse(file, {
-                header: true,
-                skipEmptyLines: true,
-                complete: function (results) {
-                    const newNumbers: any[] = [];
-                    results.data.forEach((row: any) => {
-                        const phone = row.phone || row.Phone || row.PHONE || row.phoneNumber || row['Phone Number'];
-                        if (phone) {
-                            newNumbers.push({
-                                phone: String(phone).trim(),
-                                name: row.name || row.Name || row.NAME || "",
-                                companyName: row.company || row.Company || row.companyName || ""
-                            });
-                        }
-                    });
-
-                    if (newNumbers.length > 0) {
-                        setNumbers([...numbers, ...newNumbers]);
-                        setCsvFile(null);
-                        e.target.value = '';
-                        alert(`Successfully imported ${newNumbers.length} numbers.`);
-                    } else {
-                        alert("Could not find a 'phone' column in the CSV file.");
-                    }
-                }
-            });
         }
     };
 
@@ -167,7 +139,7 @@ export default function CreateCampaignPage() {
     const prevStep = () => setStep(s => Math.max(1, s - 1));
 
     const renderStepIndicator = () => {
-        const steps = ["Setup", "Agent", "Dialing", "Leads", "Review"];
+        const steps = ["Setup", "Agent", "Dialing", "Review"];
         return (
             <div className="flex items-center justify-between mb-8 relative">
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full h-1 bg-zinc-800 -z-10 rounded-full"></div>
@@ -210,14 +182,14 @@ export default function CreateCampaignPage() {
                         <ArrowLeft size={16} />
                     </Link>
                     <div>
-                        <h1 className="text-2xl font-bold text-white tracking-tight">Create AI Campaign</h1>
-                        <p className="text-zinc-400 text-sm">Configure your outbound dialer workflow</p>
+                        <h1 className="text-2xl font-bold text-white tracking-tight">Edit Campaign</h1>
+                        <p className="text-zinc-400 text-sm">Update your outbound dialer workflow</p>
                     </div>
                 </div>
                 {step === totalSteps && (
                     <button onClick={handleSave} disabled={saving} className="btn-primary flex items-center gap-2">
                         {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                        {saving ? "Saving..." : "Save Draft"}
+                        {saving ? "Saving..." : "Save Changes"}
                     </button>
                 )}
             </div>
@@ -383,84 +355,15 @@ export default function CreateCampaignPage() {
                                 <input type="text" value={formData.vicidialIngroup} onChange={(e) => setFormData({ ...formData, vicidialIngroup: e.target.value })} placeholder="e.g. SALES_IN" className="input-field w-full" />
                             </div>
                         </div>
-                        <p className="text-xs text-zinc-500 italic mt-4">TODO: Advanced ViciDial AMI connector configuration pending Phase 2.</p>
                     </div>
                 )}
 
-                {/* STEP 4: LEADS */}
+                {/* STEP 4: REVIEW */}
                 {step === 4 && (
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                        {formData.campaignType === 'vicidial' ? (
-                            <div className="col-span-2 flex flex-col items-center justify-center p-12 text-center text-zinc-400 bg-zinc-900/30 rounded-xl border border-zinc-800">
-                                <Users size={48} className="mb-4 opacity-30" />
-                                <h3 className="text-lg font-medium text-white mb-2">Lead Management Disabled</h3>
-                                <p>For ViciDial campaigns, leads are managed natively inside the ViciDial platform. This agent will only process routed calls.</p>
-                            </div>
-                        ) : (
-                            <>
-                                {/* Import / Add Section */}
-                                <div className="flex flex-col gap-6">
-                                    <div className="p-4 bg-zinc-900 border border-zinc-800 rounded-lg">
-                                        <h3 className="text-sm font-medium text-white mb-4">Add Single Lead</h3>
-                                        <div className="flex flex-col gap-3">
-                                            <input type="text" placeholder="Phone Number (E.164)" value={manualNumber} onChange={(e) => setManualNumber(e.target.value)} className="input-field w-full" />
-                                            <input type="text" placeholder="Name (Optional)" value={manualName} onChange={(e) => setManualName(e.target.value)} className="input-field w-full" />
-                                            <button onClick={handleAddManual} disabled={!manualNumber} className="btn-secondary w-full">Add Lead</button>
-                                        </div>
-                                    </div>
-                                    <div className="relative flex items-center justify-center">
-                                        <div className="border-t border-zinc-800 w-full"></div>
-                                        <span className="absolute bg-[#09090b] px-2 text-xs text-zinc-500 font-medium">OR</span>
-                                    </div>
-                                    <div className="p-6 bg-zinc-900 border border-zinc-800 border-dashed rounded-lg flex flex-col items-center justify-center text-center">
-                                        <Upload size={24} className="text-zinc-500 mb-2" />
-                                        <h3 className="text-sm font-medium text-white">Import from CSV</h3>
-                                        <p className="text-xs text-zinc-400 mt-1 mb-4 max-w-[200px]">Upload a CSV file containing at least a 'phone' column.</p>
-                                        <label className="btn-secondary cursor-pointer">
-                                            <span>Browse Files</span>
-                                            <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
-                                        </label>
-                                    </div>
-                                </div>
-                                {/* List Section */}
-                                <div className="flex flex-col gap-3 h-full max-h-[500px]">
-                                    <h3 className="text-sm font-medium text-white flex items-center justify-between">
-                                        <span>Target List</span>
-                                        <span className="bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded text-xs">{numbers.length} loaded</span>
-                                    </h3>
-                                    <div className="flex-1 overflow-y-auto border border-zinc-800 rounded-lg bg-zinc-900/50 p-2 space-y-2">
-                                        {numbers.length === 0 ? (
-                                            <div className="h-full flex flex-col items-center justify-center text-zinc-500 py-10">
-                                                <FileText size={32} className="mb-2 opacity-50" />
-                                                <p className="text-sm">No targets added yet</p>
-                                            </div>
-                                        ) : (
-                                            numbers.map((item, index) => (
-                                                <div key={index} className="flex items-center justify-between p-2 hover:bg-zinc-800 rounded-md group">
-                                                    <div className="flex items-center gap-3">
-                                                        <Phone size={14} className="text-zinc-500" />
-                                                        <div>
-                                                            <p className="text-sm text-white font-medium">{item.phone}</p>
-                                                            {item.name && <p className="text-xs text-zinc-400">{item.name}</p>}
-                                                        </div>
-                                                    </div>
-                                                    <button onClick={() => handleRemoveNumber(index)} className="text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"><XCircle size={16} /></button>
-                                                </div>
-                                            ))
-                                        )}
-                                    </div>
-                                </div>
-                            </>
-                        )}
-                    </div>
-                )}
-
-                {/* STEP 5: REVIEW */}
-                {step === 5 && (
                     <div className="flex flex-col gap-8 max-w-3xl mx-auto">
                         <div>
                             <h2 className="text-lg font-semibold text-white mb-1">Review Campaign</h2>
-                            <p className="text-sm text-zinc-400">Review your settings before saving. The campaign will be saved as a draft.</p>
+                            <p className="text-sm text-zinc-400">Review your settings before saving.</p>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4">
@@ -469,7 +372,6 @@ export default function CreateCampaignPage() {
                                 <div className="space-y-2 text-sm">
                                     <div className="flex justify-between"><span className="text-zinc-400">Name</span><span className="text-white font-medium">{formData.name || "-"}</span></div>
                                     <div className="flex justify-between"><span className="text-zinc-400">Type</span><span className="text-white font-medium capitalize">{formData.campaignType}</span></div>
-                                    <div className="flex justify-between"><span className="text-zinc-400">Total Leads</span><span className="text-white font-medium">{formData.campaignType === 'vicidial' ? 'N/A' : numbers.length}</span></div>
                                 </div>
                             </div>
 
@@ -480,10 +382,6 @@ export default function CreateCampaignPage() {
                                     <div className="flex justify-between"><span className="text-zinc-400">Opening</span><span className="text-white font-medium truncate max-w-[150px]" title={formData.openingMessage}>{formData.openingMessage || "-"}</span></div>
                                 </div>
                             </div>
-                        </div>
-
-                        <div className="p-4 bg-orange-500/10 border border-orange-500/30 rounded-lg text-sm text-orange-200">
-                            <strong className="text-orange-400">Compliance Warning:</strong> Ensure you have consent to contact these numbers before dialing. Campaigns are created in "Draft" state and must be started manually.
                         </div>
                     </div>
                 )}
@@ -513,7 +411,7 @@ export default function CreateCampaignPage() {
                         className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2 rounded-md transition-colors flex items-center gap-2 shadow-lg shadow-blue-900/20"
                     >
                         {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                        Save Draft
+                        Save Changes
                     </button>
                 )}
             </div>

@@ -35,13 +35,25 @@ export async function PUT(
         const { id } = await params;
         const body = await request.json();
 
-        // Allow updating status or concurrency
+        // Allow updating campaign fields
         const updateData: any = {
             updatedAt: new Date(),
         };
 
-        if (body.status) updateData.status = body.status;
-        if (body.concurrency) updateData.concurrency = body.concurrency;
+        const fields = [
+            'name', 'description', 'campaignType', 'status', 'sipTrunkId', 
+            'callerId', 'agentId', 'openingMessage', 'callGoal', 'script',
+            'concurrency', 'callDelaySeconds', 'dialingMode', 'retryAttempts',
+            'retryDelaySeconds', 'timezone', 'callingWindowStart', 'callingWindowEnd',
+            'daysOfWeek', 'recordingEnabled', 'transcriptionEnabled', 
+            'vicidialCampaignId', 'vicidialIngroup'
+        ];
+
+        for (const field of fields) {
+            if (body[field] !== undefined) {
+                updateData[field] = body[field];
+            }
+        }
 
         const updatedCampaign = await db.update(campaigns)
             .set(updateData)

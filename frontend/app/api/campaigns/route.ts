@@ -29,10 +29,27 @@ export async function POST(request: Request) {
         // 1. Create the campaign
         const newCampaigns = await db.insert(campaigns).values({
             name: body.name,
+            description: body.description || null,
+            campaignType: body.campaignType || 'progressive',
             sipTrunkId: body.sipTrunkId || null,
+            callerId: body.callerId || null,
             agentId: body.agentId || null,
+            openingMessage: body.openingMessage || null,
+            callGoal: body.callGoal || null,
+            script: body.script || null,
             concurrency: body.concurrency || 1,
             callDelaySeconds: body.callDelaySeconds || 0,
+            dialingMode: body.dialingMode || 'progressive',
+            retryAttempts: body.retryAttempts || 3,
+            retryDelaySeconds: body.retryDelaySeconds || 3600,
+            timezone: body.timezone || 'UTC',
+            callingWindowStart: body.callingWindowStart || '09:00',
+            callingWindowEnd: body.callingWindowEnd || '18:00',
+            daysOfWeek: body.daysOfWeek || ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+            recordingEnabled: body.recordingEnabled !== undefined ? body.recordingEnabled : true,
+            transcriptionEnabled: body.transcriptionEnabled !== undefined ? body.transcriptionEnabled : true,
+            vicidialCampaignId: body.vicidialCampaignId || null,
+            vicidialIngroup: body.vicidialIngroup || null,
             status: 'draft',
             stats: { total: body.numbers ? body.numbers.length : 0, completed: 0, failed: 0 }
         }).returning();

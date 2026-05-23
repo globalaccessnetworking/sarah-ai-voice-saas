@@ -85,9 +85,9 @@ export async function POST(
                 agent_slug: agent.slug,
                 agent_name: "outbound-agent",
                 sip_trunk_id: trunk.id,
-                caller_id: (Array.isArray(trunk.numbers) && trunk.numbers.length > 0 && typeof trunk.numbers[0] === 'string') ? trunk.numbers[0] : trunk.name,
-                // opening_message: campaign.openingMessage, // if campaign schema had opening message
-                call_goal: `Campaign Outbound Call - ${campaign.name}`,
+                caller_id: campaign.callerId || ((Array.isArray(trunk.numbers) && trunk.numbers.length > 0 && typeof trunk.numbers[0] === 'string') ? trunk.numbers[0] : trunk.name),
+                opening_message: campaign.openingMessage,
+                call_goal: campaign.callGoal || `Campaign Outbound Call - ${campaign.name}`,
                 legacy_complaint_mode: false
             };
 

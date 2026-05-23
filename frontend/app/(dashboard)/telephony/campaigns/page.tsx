@@ -45,17 +45,40 @@ export default function CampaignsPage() {
 
     const handleUpdateStatus = async (id: string, newStatus: string) => {
         try {
-            const res = await fetch(`/api/campaigns/${id}`, {
-                method: "PUT",
+            let endpoint = `/api/campaigns/${id}`;
+            let method = "PUT";
+            let mappedStatus = newStatus;
+            
+            if (newStatus === "running") {
+                endpoint = `/api/campaigns/${id}/start`;
+                method = "POST";
+            } else if (newStatus === "paused") {
+                endpoint = `/api/campaigns/${id}/pause`;
+                method = "POST";
+            } else if (newStatus === "cancelled") {
+                endpoint = `/api/campaigns/${id}/stop`;
+                method = "POST";
+            } else if (newStatus === "resume") {
+                endpoint = `/api/campaigns/${id}/resume`;
+                method = "POST";
+                mappedStatus = "running";
+            }
+            
+            const res = await fetch(endpoint, {
+                method: method,
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ status: newStatus }),
+                body: method === "PUT" ? JSON.stringify({ status: newStatus }) : undefined,
             });
 
             if (res.ok) {
-                setCampaigns(campaigns.map(c => c.id === id ? { ...c, status: newStatus } : c));
+                setCampaigns(campaigns.map(c => c.id === id ? { ...c, status: mappedStatus } : c));
+            } else {
+                const err = await res.json();
+                alert(`Error: ${err.error || "Failed to update status"}`);
             }
         } catch (error) {
             console.error("Error updating campaign status", error);
+            alert("Error updating campaign status");
         }
     };
 
@@ -225,43 +248,35 @@ export default function CampaignsPage() {
                                                     {new Date(campaign.createdAt).toLocaleDateString()}
                                                 </td>
                                                 <td className="text-right">
-                                                    <div className="flex items-center justify-end gap-2">
-                                                        {campaign.status === "idle" || campaign.status === "paused" ? (
-                                                            <button
-                                                                onClick={() => handleUpdateStatus(campaign.id, "running")}
-                                                                className="p-2 text-zinc-400 hover:text-green-400 hover:bg-zinc-800 rounded-md transition-colors"
-                                                                title="Start Campaign"
-                                                            >
-                                                                <Play size={16} />
-                                                            </button>
-                                                        ) : campaign.status === "running" ? (
-                                                            <button
-                                                                onClick={() => handleUpdateStatus(campaign.id, "paused")}
-                                                                className="p-2 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800 rounded-md transition-colors"
-                                                                title="Pause Campaign"
-                                                            >
-                                                                <Pause size={16} />
-                                                            </button>
-                                                        ) : null}
+                                                        <div className="flex items-center justify-end gap-2">
+                                                            <Link href={`/telephony/campaigns/edit/${campaign.id}`} className="p-2 text-zinc-400 hover:text-blue-400 hover:bg-zinc-800 rounded-md transition-colors" title="Edit Campaign">
+                                                                <Megaphone size={16} />
+                                                            </Link>
+                                                            
+                                                            {campaign.status === "idle" || campaign.status === "draft" ? (
+                                                                <button onClick={() => handleUpdateStatus(campaign.id, "running")} className="p-2 text-zinc-400 hover:text-green-400 hover:bg-zinc-800 rounded-md transition-colors" title="Start Campaign">
+                                                                    <Play size={16} />
+                                                                </button>
+                                                            ) : campaign.status === "paused" ? (
+                                                                <button onClick={() => handleUpdateStatus(campaign.id, "resume")} className="p-2 text-zinc-400 hover:text-green-400 hover:bg-zinc-800 rounded-md transition-colors" title="Resume Campaign">
+                                                                    <Play size={16} />
+                                                                </button>
+                                                            ) : campaign.status === "running" ? (
+                                                                <button onClick={() => handleUpdateStatus(campaign.id, "paused")} className="p-2 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800 rounded-md transition-colors" title="Pause Campaign">
+                                                                    <Pause size={16} />
+                                                                </button>
+                                                            ) : null}
 
-                                                        {campaign.status === "running" || campaign.status === "paused" ? (
-                                                            <button
-                                                                onClick={() => handleUpdateStatus(campaign.id, "cancelled")}
-                                                                className="p-2 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-md transition-colors"
-                                                                title="Cancel Campaign"
-                                                            >
-                                                                <Square size={16} />
-                                                            </button>
-                                                        ) : null}
+                                                            {campaign.status === "running" || campaign.status === "paused" ? (
+                                                                <button onClick={() => handleUpdateStatus(campaign.id, "cancelled")} className="p-2 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-md transition-colors" title="Stop Campaign">
+                                                                    <Square size={16} />
+                                                                </button>
+                                                            ) : null}
 
-                                                        <button
-                                                            onClick={() => handleDelete(campaign.id)}
-                                                            className="p-2 text-zinc-400 hover:text-red-400 hover:bg-zinc-800 rounded-md transition-colors"
-                                                            title="Delete Campaign"
-                                                        >
-                                                            <Trash2 size={16} />
-                                                        </button>
-                                                    </div>
+                                                            <button onClick={() => handleDelete(campaign.id)} className="p-2 text-zinc-400 hover:text-red-400 hover:bg-zinc-800 rounded-md transition-colors" title="Delete Campaign">
+                                                                <Trash2 size={16} />
+                                                            </button>
+                                                        </div>
                                                 </td>
                                             </tr>
                                         );
