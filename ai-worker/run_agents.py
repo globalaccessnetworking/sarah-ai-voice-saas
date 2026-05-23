@@ -3548,6 +3548,34 @@ async def request_fnc(req: JobRequest) -> None:
         await req.reject()
 
 
+def normalize_dict(value):
+    import json
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value) if value.strip() else {}
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def normalize_tools_config(value):
+    import json
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value) if value.strip() else []
+            return parsed if isinstance(parsed, (dict, list)) else []
+        except Exception:
+            return []
+    return []
+
+
 async def get_active_ticket_from_db(caller_phone: str):
     """HARD STATE LOCK: Queries PostgreSQL directly for an active, unresolved ticket.
     
@@ -3709,9 +3737,11 @@ async def entrypoint(ctx: JobContext):
         logger.error(f"Job REJECTED: No running configuration found for slug '{agent_slug or 'UNKNOWN'}'")
         return
 
+    extra_config = normalize_dict(agent_config.get("extra_config", {}))
+
     # Strict Legacy Suthra/Complaint Detector
-    _meta_obj_local = locals().get("meta_obj", {})
-    _legacy_cfg = str(agent_config.get("extra_config", {}).get("legacy_complaint_mode", "")).lower() == "true"
+    _meta_obj_local = normalize_dict(locals().get("meta_obj", {}))
+    _legacy_cfg = str(extra_config.get("legacy_complaint_mode", "")).lower() == "true"
     _legacy_meta = str(_meta_obj_local.get("legacy_complaint_mode", "")).lower() == "true"
     _legacy_slugs = ["suthra-sarah", "sarah-pioneer-urdu-punjabi", "outbound-sarah-robocall"]
     _is_legacy_slug = str(agent_config.get("slug", "")).lower() in _legacy_slugs or str(agent_config.get("name", "")).lower() in _legacy_slugs
@@ -3941,7 +3971,8 @@ async def entrypoint(ctx: JobContext):
             phonetic_id = " ".join(_bare)
 
             # Read the template from the GUI (agent tools_config) - zero hardcoding
-            _tools_cfg = agent_config.get("tools_config", {}) if isinstance(agent_config.get("tools_config"), dict) else {}
+            _tc = normalize_tools_config(agent_config.get("tools_config", {}))
+            _tools_cfg = _tc if isinstance(_tc, dict) else {}
             _default_template = (
                 "[CRITICAL DATABASE OVERRIDE]: The system database confirms that this caller, "
                 "{caller_name}, has an active, unresolved complaint with Ticket ID: {ticket_id}. "
@@ -4247,7 +4278,8 @@ Your goal is to collect: **Issue, District, Address, Landmark, and Name/Phone**.
         logger.warning(f"Error parsing auto-record metadata: {e}")
 
     # POLICY SYNC: Respect GUI-level Recording Toggle (Object)
-    tools_settings = agent_config.get("tools_config") if isinstance(agent_config.get("tools_config"), dict) else {}
+    _tc2 = normalize_tools_config(agent_config.get("tools_config", {}))
+    tools_settings = _tc2 if isinstance(_tc2, dict) else {}
     auto_record_enabled = tools_settings.get("auto_record", False)
     if auto_record_enabled:
         logger.info(f"[POLICY] Call Recording is ENABLED for agent {agent_config.get('slug')}")
@@ -4320,7 +4352,8 @@ Your goal is to collect: **Issue, District, Address, Landmark, and Name/Phone**.
     # GUI MAPPING:
     # 1. 'tools_settings' = GUI Sliders & Policy (JSONB Object)
     # 2. 'gui_tools_array' = Assigned Tools List (JSON Array)
-    tools_settings = agent_config.get("tools_config") if isinstance(agent_config.get("tools_config"), dict) else {}
+    _tc3 = normalize_tools_config(agent_config.get("tools_config", {}))
+    tools_settings = _tc3 if isinstance(_tc3, dict) else {}
     gui_tools_array = agent_config.get("toolsConfig") if isinstance(agent_config.get("toolsConfig"), list) else []
     
     # GUI MAPPING:
@@ -4790,7 +4823,7 @@ The opening message has already been delivered to the user automatically by the 
 
     # Initialize 10-Tool Agentic Matrix via ToolProvider (Restored V9 Order)
     provider = None
-    _tools_config = agent_config.get("tools_config", [])
+    _tools_config = normalize_tools_config(agent_config.get("tools_config", []))
     _has_explicit_tools = isinstance(_tools_config, list) and len(_tools_config) > 0
     
     if SovereignToolProvider and (is_legacy_complaint_agent or _has_explicit_tools):
@@ -5874,7 +5907,7 @@ The opening message has already been delivered to the user automatically by the 
                             "caller_id": caller_phone,
                             "end_reason": end_reason,
                             "recording_id": auto_record_egress_id,
-                            "sentiment_analysis": (agent_config.get("tools_config", {}) if isinstance(agent_config.get("tools_config"), dict) else {}).get("sentiment_analysis", False),
+                            "sentiment_analysis": (normalize_tools_config(agent_config.get("tools_config", {})) if isinstance(normalize_tools_config(agent_config.get("tools_config", {})), dict) else {}).get("sentiment_analysis", False),
                             "duration": time.time() - call_tracker.call_start_time if call_tracker.call_start_time else 0
                         }
                     ))
