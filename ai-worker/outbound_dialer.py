@@ -64,44 +64,85 @@ class OutboundDialer:
             logger.error(f"Failed to update DB for {ticket_id}: {e}")
 
     async def make_outbound_call(self, lkapi, payload):
-        ticket_id = payload.get("ticket_id")
-        phone = payload.get("phone")
-        citizen_name = payload.get("citizen_name")
+        import time
+        external_record_id = payload.get("external_record_id") or payload.get("lead_id") or payload.get("ticket_id") or f"CALL-{int(time.time())}"
+        phone = payload.get("phone") or payload.get("to_number")
+        if not phone:
+            logger.error("No phone number provided in payload")
+            return
+            
+        contact_name = payload.get("contact_name") or payload.get("lead_name") or payload.get("citizen_name") or "Valued Customer"
+        call_goal = payload.get("call_goal") or payload.get("issue_type") or "General Inquiry"
+        campaign_id = payload.get("campaign_id") or "default_campaign"
+        agent_name = payload.get("agent_name") or "outbound-agent"
+        trunk_id = payload.get("trunk_id") or SIP_TRUNK_ID
         agent_config = payload.get("config", {})
 
-        room_name = f"call_{phone.replace('+', '')}_{ticket_id}"
-        logger.info(f"Dispatching SIP call to {phone} for Ticket {ticket_id}...")
+        clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "").strip()
+        timestamp_val = int(time.time())
+        room_name = f"outbound_{clean_phone}_{external_record_id}_{timestamp_val}"
+        
+        logger.info(f"Dispatching SIP call to {clean_phone} for Campaign {campaign_id} (Record {external_record_id})...")
 
-        # Prepare Metadata Tunnel
-        metadata = json.dumps({
+        # Prepare Metadata Tunnel (Generic SaaS Format)
+        metadata_obj = {
             "type": "outbound",
+            "direction": "outbound",
+            "call_direction": "outbound",
             "agent_id": payload.get("agent_id"),
-            "ticket_id": ticket_id,
-            "citizen_name": citizen_name,
-            "issue_type": payload.get("issue_type", "General Complaint"),
+            "agent_name": agent_name,
+            "phone": clean_phone,
+            "to_number": clean_phone,
+            "contact_name": contact_name,
+            "lead_name": contact_name,
+            "campaign_id": campaign_id,
+            "external_record_id": external_record_id,
+            "room_name": room_name,
+            
+            # Legacy Backward Compatibility Aliases
+            "citizen_name": contact_name,
+            "issue_type": call_goal,
+            "ticket_id": external_record_id,
+            
             "config": agent_config
-        })
+        }
+        metadata = json.dumps(metadata_obj, ensure_ascii=False)
 
         try:
-            # Create SIP Participant (Nayatel Bridge)
+            # Step 1: Create SIP Participant
             request = api.CreateSIPParticipantRequest(
-                sip_trunk_id=SIP_TRUNK_ID,
-                sip_call_to=phone,
+                sip_trunk_id=trunk_id,
+                sip_call_to=clean_phone,
                 room_name=room_name,
-                participant_identity=f"sarah_outbound_{ticket_id}",
-                participant_name="Sarah",
+                participant_identity=f"sip_{clean_phone}_{timestamp_val}",
+                participant_name=contact_name,
                 participant_metadata=metadata
             )
             
             response = await lkapi.sip.create_sip_participant(request)
-            sip_call_id = response.sip_call_id
+            sip_call_id = getattr(response, "sip_call_id", "")
             
-            logger.info(f"Call successfully dispatched. SIP ID: {sip_call_id}")
-            await self.update_complaint_status(ticket_id, "calling", sip_call_id=sip_call_id)
+            logger.info(f"SIP Call successfully dispatched. SIP ID: {sip_call_id}")
+            
+            # Step 2: Explicitly Dispatch Agent
+            dispatch_request = api.CreateAgentDispatchRequest(
+                agent_name=agent_name,
+                room=room_name,
+                metadata=metadata,
+            )
+            dispatch = await lkapi.agent_dispatch.create_dispatch(dispatch_request)
+            dispatch_id = getattr(dispatch, "id", "") or getattr(dispatch, "dispatch_id", "")
+            
+            logger.info(f"Agent explicitly dispatched. Dispatch ID: {dispatch_id}")
+            
+            # Legacy DB update for complaints
+            if payload.get("ticket_id") or payload.get("legacy_complaint_mode"):
+                await self.update_complaint_status(external_record_id, "calling", sip_call_id=sip_call_id)
             
         except Exception as e:
-            logger.error(f"SIP Bridge Error for {ticket_id}: {e}")
-            await self.update_complaint_status(ticket_id, "failed", error=str(e))
+            logger.error(f"SIP Bridge Error for {external_record_id}: {e}")
+            if payload.get("ticket_id") or payload.get("legacy_complaint_mode"):
+                await self.update_complaint_status(external_record_id, "failed", error=str(e))
 
     async def run(self):
         async with api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET) as lkapi:
