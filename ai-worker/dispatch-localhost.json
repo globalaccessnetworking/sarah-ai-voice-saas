@@ -1,0 +1,20 @@
+{
+  "dispatchRule": {
+    "name": "asterisk-localhost-dispatch",
+    "trunkIds": [
+      "ST_i9VJh367Z7uX"
+    ],
+    "rule": {
+      "dispatchRuleIndividual": {
+        "roomPrefix": "outbound_"
+      }
+    },
+    "roomConfig": {
+      "agents": [
+        {
+          "agentName": "outbound-agent"
+        }
+      ]
+    }
+  }
+}

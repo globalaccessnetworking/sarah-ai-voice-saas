@@ -1,0 +1,12 @@
+{
+  "dispatch_rule": {
+    "name": "Sarah Inbound Rule",
+    "trunkIds": ["ST_sJkBvj5QARet"],
+    "rule": {
+      "dispatchRuleIndividual": {
+        "roomPrefix": "call-"
+      }
+    },
+    "metadata": "{\"agentName\":\"telephony-agent\"}"
+  }
+}

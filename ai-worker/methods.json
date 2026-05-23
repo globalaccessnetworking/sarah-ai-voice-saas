@@ -1,0 +1,8 @@
+[
+  "participant_identity",
+  "room_name",
+  "transfer_to",
+  "play_dialtone",
+  "headers",
+  "ringing_timeout"
+]

@@ -1,0 +1,64 @@
+# Environment / secrets
+.env
+.env.*
+*.env
+*.env.*
+.env.local
+.local.env
+**/.env
+**/.env.*
+**/.env.local
+**/.local.env
+!.env.example
+
+# Python generated / virtualenv
+venv/
+venv_prod/
+**/venv/
+**/venv_prod/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Node generated
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+dist/
+**/dist/
+build/
+**/build/
+.cache/
+**/.cache/
+.turbo/
+**/.turbo/
+coverage/
+**/coverage/
+
+# Logs / runtime
+logs/
+**/logs/
+*.log
+.pm2/
+*.pid
+
+# Uploaded media / recordings
+recordings/
+uploads/
+public/uploads/
+public/recordings/
+public/audio/
+public/videos/
+*.wav
+*.mp3
+*.mp4
+*.webm
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

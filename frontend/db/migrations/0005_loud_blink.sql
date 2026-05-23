@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "bypass_outbound_dictionary" boolean DEFAULT false NOT NULL;

@@ -1,0 +1,6 @@
+{
+  "trunk": {
+    "name": "vicidial-trunk",
+    "numbers": [".*"]
+  }
+}

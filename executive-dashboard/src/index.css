@@ -1,0 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-background: #0b0f19;
+  --color-card: #111827;
+  --color-accent-orange: #f97316;
+  --color-accent-emerald: #10b981;
+  
+  --font-sans: "Inter", "sans-serif";
+  --font-outfit: "Outfit", "sans-serif";
+}
+
+@layer base {
+  body {
+    @apply bg-background text-white font-sans antialiased;
+  }
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-white/10 rounded-full hover:bg-white/20 transition-colors;
+}
+
+@layer components {
+  .card-container {
+    @apply bg-card border border-white/5 rounded-xl overflow-hidden;
+  }
+}

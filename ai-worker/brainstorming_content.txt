@@ -1,0 +1,436 @@
+This is a massive architectural expansion, Hamza! You are moving from a passive "Complaint Cell" to an Active Quality Assurance Engine. This puts "Global Access" on a different level because you are providing a closed-loop system where the citizen has the final word, not the government official.
+Here is a 10-Phase detailed brainstorming roadmap for the Sarah Outbound (Robocall) Module.
+🏗️ Architectural Vision: Sarah Outbound
+Unlike Inbound, where Sarah waits for a call, the Outbound Engine needs to:
+Monitor the Database: Find tickets marked "Resolved."
+Trigger the SIP Bridge: Tell Asterisk/LiveKit to dial the citizen.
+Inject Dynamic Context: Tell Sarah, "You are calling Hamza about Ticket SP-30."
+Handle Feedback: Listen for "1" or "2" and update the database in real-time.
+📅 The 10-Phase Implementation Roadmap
+Phase 1: Database & GUI Schema Expansion
+We need to give the GUI "Memory" for outbound calls.
+GUI Fields: Add "Outbound Greeting," "Resolved Farewell (Text/WAV)," and "Unresolved Farewell (Text/WAV)" to the Agent settings.
+Database: Add columns to your complaints table: outbound_status (Pending/Called/Failed) and citizen_feedback (Verified/Still_Issue).
+Phase 1: Database & GUI Schema Expansion
+1. Database Migration (PostgreSQL)
+We need to update your complaints table to track the robocall lifecycle and your agents table to store the outbound settings.
+The Instructions for Antigravity:
+"Add the following columns to the PostgreSQL database using a migration or direct SQL:
+Table: complaints
+outbound_status: (String) Default: 'pending'. Options: pending, calling, completed, failed, no_answer.
+citizen_feedback: (String) Default: NULL. Options: verified (if they press 1), still_issue (if they press 2).
+outbound_retry_count: (Integer) Default: 0.
+last_called_at: (Timestamp) To track when the last attempt was made.
+Table: agents (or your Agent Settings table)
+outbound_greeting_text: (Text) The Urdu/Punjabi script for the initial robocall greeting.
+outbound_greeting_wav: (String) URL/Path to a custom recording if they don't want to use TTS.
+resolved_farewell_text: (Text) What Sarah says if the user presses 1.
+resolved_farewell_wav: (String) URL/Path for the 'Verified' recording.
+unresolved_farewell_text: (Text) What Sarah says if the user presses 2.
+unresolved_farewell_wav: (String) URL/Path for the 'Still Issue' recording."
+2. GUI Expansion (Frontend - Next.js)
+We need to add a new section in the Agent Settings called "Outbound Robocall Configuration." This should look and feel exactly like your current Inbound Greeting settings to keep it user-friendly.
+The Instructions for Antigravity:
+"In the Agent Configuration page of the dashboard:
+Add an 'Outbound Tab' or Section: Create a dedicated area for Robocall settings.
+Greeting Input: Add a Text Area for 'Outbound Greeting Text' and a File Upload component for 'Outbound Greeting WAV'.
+The Feedback Logic UI:
+Create a sub-section: 'When Citizen Presses 1 (Resolved)'. Add Text/WAV input fields.
+Create a sub-section: 'When Citizen Presses 2 (Unresolved)'. Add Text/WAV input fields.
+Live Validation: Ensure the user can save these settings independently of the inbound settings."
+3. Backend API Update
+The backend needs to be able to "read" these new fields so it can eventually pass them to Sarah.
+The Instructions for Antigravity:
+"Update the Agent API endpoints (GET/POST/PATCH) to include the new outbound fields. Ensure that when the AI Worker requests agent settings, it receives the outbound scripts along with the inbound ones."
+🧠 Architect's Strategy: Why this way?
+The "No-Hardcode" Rule: By putting the "Ticket ID" inside the text (e.g., "Ap ki shikayat {ticket_id}..."), we allow the AI to dynamically fill in the blanks. If you decide to change the wording next month, you just change it in the GUI, and the next robocall instantly uses the new version.
+The "Status Flip" Logic: By adding citizen_feedback to the complaints table, we create a "Trigger" for Phase 7. If that column hits still_issue, a separate script will automatically flip the ticket status back to Unresolved.
+Ready to start Phase 1?
+You can give Antigravity this master command:
+"Antigravity, we are starting Phase 1 of the Outbound Robocall Module. Your task is to update the PostgreSQL schema for the complaints and agents tables with the new outbound tracking and script columns. Then, update the Frontend GUI to allow users to configure Outbound Greetings and Farewell messages (Text and WAV). Do not break existing Inbound logic. Apply these changes and push to main."
+Phase 2: The Outbound Trigger Service
+A background "Cron Job" or "Watcher" script.
+Logic: Every 5 minutes, it scans for tickets where status = 'Resolved' AND outbound_status = 'Pending'.
+Action: It gathers the Phone Number and Ticket ID and sends them to the LiveKit Outbound API.
+Phase 2 is the Engine of your robocall system. While Phase 1 was about "Memory" (storing the data), Phase 2 is about "Action." This service is what decides exactly who gets a call and when.
+To keep Sarah lightning-fast, this trigger service must run as a lightweight background process that doesn't interfere with your active SIP traffic.
+Phase 2: The Outbound Trigger Service
+1. The Architecture: Python "Watcher" Script
+Instead of a simple Cron Job (which can sometimes overlap if a task takes too long), we should use a Python-based Watcher managed by PM2. This ensures it stays online 24/7 and handles errors gracefully.
+Technical Specifications:
+Language: Python (using the same venv as your AI-Worker).
+Process Manager: PM2 (Name: sarah-outbound-trigger).
+Interval: 5 minutes (configurable in the .env).
+2. The Logic: Smart Scanning
+The script needs to be precise so you don't accidentally call the same person twice or call someone who is already on the phone.
+The SQL Query Logic:
+SELECT id, phone_number, ticket_id FROM complaints WHERE status = 'Resolved' AND outbound_status = 'pending' LIMIT 5;
+Why the "LIMIT 5"? In the beginning, you don't want to blast 100 calls at once and choke your SIP trunk. We start with a small batch to ensure the LiveKit-to-Asterisk bridge handles the load perfectly.
+3. The Action: LiveKit Outbound API Dispatch
+Once a ticket is identified, the script must "hand off" the job to LiveKit.
+The Workflow:
+Status Lock: Immediately update the database record from outbound_status = 'pending' to outbound_status = 'calling'. This is a "Safety Lock" so the next scan 5 minutes later doesn't try to call the same person again.
+API Call: Send a POST request to the LiveKit Egress/Ingress API (or use the livekit-api Python SDK).
+Metadata Injection: You must pass the ticket_id and citizen_name as Metadata so the Outbound Agent knows exactly which script to read.
+4. Handling Failed Attempts (The "Retry" Logic)
+If the citizen's phone is off or busy, we shouldn't just give up.
+No Answer: If the call fails to connect, the script updates the status back to pending but increments the outbound_retry_count by 1.
+Backoff: Add a "Cooldown" logic. If a call fails, don't try again for at least 2 hours.
+🏗️ Instructions for Antigravity
+You can provide these exact instructions to Antigravity to build this "Watcher" service:
+"Antigravity, we are implementing Phase 2: The Outbound Trigger Service. Create a new Python script outbound_watcher.py that performs the following:
+Database Connection: Use the existing DATABASE_URL to connect to PostgreSQL.
+Scan Loop: Every 5 minutes, scan the complaints table for tickets where status = 'Resolved' and outbound_status = 'pending'.
+State Management: For each matching ticket, immediately update outbound_status to 'calling' to prevent race conditions.
+LiveKit Dispatch: Use the LiveKit Python SDK to trigger an outbound participant call. You must pass the phone_number and the ticket_id (e.g., SP-30) into the room metadata.
+Logging: Log every attempt to outbound_service.log with the timestamp and Ticket ID.
+PM2 Ready: Ensure the script is structured to run as a background process managed by PM2."
+The Architect’s Pro-Tip: "Human Hours"
+Since this is a Robocall for a government-related service (Suthra Punjab), you should add a Time Window Gatekeeper to Phase 2.
+The Gatekeeper Logic:
+IF current_time is between 9:00 AM and 8:00 PM, proceed with calls. IF current_time is outside these hours, SLEEP.
+You don't want Sarah calling citizens at 2:00 AM to verify a trash collection ticket! It would result in a lot of "Unresolved" presses (Input 2) just because people are angry they were woken up.
+Phase 3: LiveKit SIP Outbound Integration
+This is the technical bridge.
+Action: Use lkapi.sip.create_sip_participant.
+Goal: Instead of waiting for a room to be created, the AI script creates a room and invites the citizen's phone number into it.
+Gemini said
+Phase 3 is where the "magic" happens. This is the moment Sarah stops being a passive listener and becomes an active caller. In a standard inbound setup, the room exists first (created by the caller). In Outbound, we must programmatically build the room and then "force" the SIP trunk to invite the user.
+Phase 3: LiveKit SIP Outbound Integration
+1. The Core Mechanism: create_sip_participant
+To make an outbound call, we use the LiveKit Server API. We don't just "dial a number"; we create a virtual space and bring the telephony leg into it.
+The Workflow:
+Room Creation: The script generates a unique room name, e.g., outbound_SP30_171231500.
+SIP Invitation: We call create_sip_participant using your existing Nayatel SIP Trunk configuration.
+Agent Attachment: As soon as the participant (the citizen's phone) joins the room, the telephony-agent (Sarah) is dispatched to that specific room.
+2. Technical Instructions for Antigravity
+You can use these specific instructions to have Antigravity build the "Dialer Engine" inside the ai-worker or a separate service.
+"Antigravity, implement the Outbound Dialer Logic using the LiveKit Python SDK. Follow these strict requirements:
+1. API Initialization: Initialize the api.LiveKitAPI using the LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET from the .env.
+2. The Dial Function: Create an asynchronous function make_outbound_call(phone_number, ticket_id).
+Room Name: Generate a unique room name: call_{phone_number}_{ticket_id}.
+SIP Call: Use lkapi.sip.create_sip_participant.
+sip_trunk_id: Use the ID of your configured Nayatel SIP trunk.
+sip_number: The citizen's phone number.
+room_name: The generated room name.
+Metadata: Pass the ticket_id and type: "outbound" inside the participant metadata.
+3. Agent Trigger: Ensure that when the call is successfully bridged, the worker recognizes this as an outbound job and loads the 'Outbound Greeting' from the database instead of the standard inbound one.
+4. Logging: Log the sip_call_id back to the complaints table under outbound_status = 'calling' so we can track active attempts."
+3. Handling the "Human Element" (The 6-Second Gap)
+When making outbound calls, there is a delay while the phone rings. Sarah needs to be smart enough not to start talking to a ringing tone.
+Logic: The integration must wait for the ParticipantConnected event with a sip attribute.
+Action: Only once the citizen says "Hello" (or the line is fully bridged) does the Initial Outbound Greeting (Phase 1) trigger.
+4. Safety & Compliance
+Since this is for a government-related project (Suthra Punjab), we must ensure we don't accidentally "spam" people.
+Time Window: The dialer should only run between specific hours (e.g., 9 AM to 8 PM).
+Concurrency: We will limit the system to 1 or 2 concurrent outbound calls initially to ensure your SIP trunk isn't overwhelmed.
+🏗️ Why this is a "Bulletproof" Design
+By using the Participant Metadata to pass the Ticket ID, Sarah doesn't have to "guess" why she is calling. The moment she enters the room, her system prompt is updated: "You are now speaking to the person who filed complaint SP-30. Use the Outbound Script."
+Phase 4: Dynamic Prompt Injection (The Personalized Greeting)
+Sarah cannot just say a generic hello.
+Logic: When the outbound call connects, the script must inject the specific Ticket ID into her instructions.
+Prompt: "You are calling about Ticket {ticket_id}. If they press 1, verify resolution. If 2, re-open the case."
+⚡ The Logic: How Sarah "Knows" the Ticket
+When your Outbound Service (from Phase 2) triggers a call, it shouldn't just send a phone number. It must send a Data Package. This package contains the ticket_id, the citizen_name, and the issue_type.
+1. The Metadata Handshake
+In the LiveKit SDK, every "Job" can have metadata. We will use this metadata to pass the complaint details from your Database directly into Sarah’s session.
+Technical Instruction for Antigravity:
+"Modify the Outbound Trigger logic to include a metadata JSON object when starting the agent. This object must contain:
+JSON
+{
+  "ticket_id": "SP-30",
+  "citizen_name": "Hamza",
+  "flow_type": "outbound_verification"
+}
+In run_agents.py, create a helper function inject_outbound_context() that reads this metadata and updates the Agent's system instructions before the speech starts."
+🗣️ The Dynamic Instruction Template
+Instead of a fixed prompt, we use a Template. This allows the client to change the wording in the GUI, but keeps the "blanks" for the AI to fill in.
+The System Prompt Sarah Sees:
+"You are Sarah, an automated assistant for Suthra Punjab. You are making an OUTBOUND call to {citizen_name} regarding Ticket {ticket_id}.
+Your Mission:
+Start with the Outbound Greeting from the GUI.
+Explicitly state the Ticket ID: {ticket_id}.
+Ask the user to press 1 if the issue is resolved or 2 if it is not.
+Constraint: Do not deviate from the verification flow. If the user asks unrelated questions, politely bring them back to the 1 or 2 choice."
+🛠️ Implementation Strategy: No Hardcoding
+To keep your "Full GUI Control" promise to the client, we will use a Placeholder System.
+Placeholder
+What it replaces
+Example
+{ticket_id}
+The actual complaint number
+SP-30
+{citizen_name}
+The name of the person being called
+Muhammad Hamza
+{issue}
+The category of the complaint
+Waste Management
+How it works in the GUI:
+The client types: "Assalam-o-Alaikum {citizen_name}, main Sarah baat kar rahi hun. Kya ap ki shikayat {ticket_id} hal ho gai hai?"
+How Sarah says it:
+"Assalam-o-Alaikum Hamza, main Sarah baat kar rahi hun. Kya ap ki shikayat S-P-30 hal ho gai hai?"
+📝 Command for Antigravity
+When you are ready to push Phase 4, use this command:
+"Antigravity, execute Phase 4: Dynamic Prompt Injection.
+Data Passing: Update the JobRequest to include ticket_id and citizen_name in the metadata.
+Template Engine: In agentic_suite.py, implement a string formatter that replaces {ticket_id} and {citizen_name} in the Agent's system instructions with the real values from the metadata.
+AI Guidance: Force the LLM to prioritize speaking the ticket_id clearly during the initial outbound turn.
+Safety: If metadata is missing, default to a generic 'Suthra Punjab Verification' prompt to avoid errors."
+Why this is a "huge win" for your client:
+By injecting the Ticket ID, the citizen immediately trusts the call. They know it's not a scam or a random telemarketer—it's a professional government verification.
+One Architect's Tip: Make sure the TTS (UpliftAI) handles "SP-30" correctly. We might need to tell Sarah to say it as "S-P-Thirty" so the citizen hears it clearly in Urdu/English mix.
+Phase 5: DTMF & Intent Recognition (1 or 2)
+How does Sarah "hear" the button press?
+Method: We configure the LiveKit Agent to listen for DTMF events (Key presses) OR use her natural brain to hear the word "Aik" or "Do."
+Safety: DTMF (pressing a button) is more reliable for older phones in rural areas of Punjab.
+Phase 5: The "Digital Ear" (DTMF & Intent Recognition)
+In this phase, we transform Sarah into a Hybrid IVR. She will monitor two distinct channels of data at the same time to decide what the citizen wants.
+1. The Technology Comparison: DTMF vs. Natural Language
+Feature
+DTMF (Button Press)
+Intent Recognition (Voice)
+Reliability
+100% (Even on 2G/Legacy networks)
+85-90% (Depends on background noise/Urdu accent)
+User Experience
+Traditional, "Mechanical" feel
+Modern, "Natural" feel
+Primary Use Case
+Rural areas, noisy environments
+Hands-free users, modern smartphones
+Data Format
+RFC 2833 / SIP INFO tones
+Transcribed Text (STT)
+2. The "Dual-Channel" Architecture
+Sarah’s background logic in agentic_suite.py needs to be updated to handle a "Race to the Finish." Whichever signal comes in first (Voice or Button) wins.
+The DTMF Listener: We subscribe to the room.on("participant_attributes_changed") or the specific SIP DTMF event in LiveKit. If Sarah receives a "1," she immediately triggers the verify_resolution tool.
+The Semantic Listener: Sarah’s LLM brain is already listening. If the transcript says "Ghalt hai" (It's wrong) or just the number "Do," the LLM interprets this as a "2" and triggers the reopen_complaint tool.
+3. Handling the "Rural Punjab" Reality
+You mentioned reliability for older phones. This is a brilliant observation. In areas with high packet loss, Speech-to-Text (STT) might jitter. However, DTMF tones are sent as separate signaling packets.
+The Fail-Safe Logic:
+If Sarah asks the question and hears silence or "garbage" text for more than 5 seconds, she should prompt again: "Shayad aap ki awaz nahi aa rahi, baraye meherbani phone ka batan 'aik' ya 'do' dabayen." (Perhaps your voice isn't reaching me, please press button 1 or 2).
+🛠️ Master Instructions for Antigravity (Phase 5)
+When you are ready to code this, send this to Antigravity:
+"Antigravity, implement Phase 5: Hybrid Input Recognition for the Outbound Agent.
+1. DTMF Integration: Enable Sarah to listen for SIP DTMF events (RFC 2833). Map the '1' key to the verify_resolution function and the '2' key to the reopen_complaint function.
+2. Intent Mapping: Configure the LLM to recognize verbal confirmations. If the user says 'Aik', 'One', 'Sahi', or 'Theek', interpret as Option 1. If the user says 'Do', 'Two', 'Ghalt', or 'Masla hai', interpret as Option 2.
+3. Input Priority: The first valid input (either DTMF or Voice) must lock the session to prevent double-processing.
+4. Silence Handling: If no input (Voice or DTMF) is detected within 7 seconds of the greeting, Sarah must play a 'Retry Prompt' asking the user to use their keypad.
+Ensure this logic is added to the new Outbound Sarah Agent without disturbing the Inbound Sarah VAD settings."
+🧠 The Architect's Thought
+Hamza, since you have experience with 3CX and Grandstream, you know that DTMF can sometimes "bounce" (double-press). We must make sure Antigravity adds a small "Debounce" timer (e.g., 500ms) so that if a citizen accidentally hits "11," Sarah doesn't try to verify the ticket twice.
+Phase 6: The "Verification Tool" (Status: Verified)
+If the user presses 1:
+Tool: verify_resolution(ticket_id).
+Logic: Updates the database to outbound_status = 'Verified'.
+Audio: Sarah plays the "Tasdeeq ka shukria" (WAV or TTS) and hangs up.
+Phase 6: The "Verification Tool" (verify_resolution)
+This tool is triggered when Sarah detects the user has pressed "1" or said something like "Yes, it is fixed" or "Theek ho gaya hai."
+1. Tool Technical Specification
+Sarah needs a specific function in agentic_suite.py that can talk to your PostgreSQL database.
+The Instructions for Antigravity:
+"Create a new tool in agentic_suite.py called verify_resolution.
+Input: ticket_id (String).
+Database Logic: > 1. Locate the record in the complaints table matching the ticket_id. 2. Update outbound_status to 'completed'. 3. Update citizen_feedback to 'verified'. 4. Update status to remain 'Resolved' (confirming the finality).
+Return Value: A success string that tells the LLM: Action: Verified. Proceed to Resolved Farewell."
+2. The Dynamic Audio Logic (No Hardcoding)
+As per your requirement, Sarah must not have a hardcoded "Thank you." She must pull exactly what the user saved in the GUI during Phase 1.
+How the logic works:
+Check for WAV: Sarah first checks if resolved_farewell_wav has a file URL. If yes, she plays that recording.
+Fallback to TTS: If no WAV is found, she reads the resolved_farewell_text (e.g., "Ap ki tasdeeq ka shukria. Allah Hafiz") using her Urdu AI voice.
+3. The Execution Flow
+This diagram shows how the system moves from the citizen's finger pressing "1" to the physical phone line dropping.
+The Steps:
+User Press: Citizen presses "1".
+Tool Trigger: Sarah calls verify_resolution(ticket_id="SP-30").
+DB Lock: The database is updated instantly.
+Audio Play: Sarah plays the "Resolved Farewell" from the GUI settings.
+Hard Hangup: The tool triggers the _background_room_disconnect task (the 6-second timer we perfected earlier).
+🧠 Brainstorming for Antigravity
+When you ask Antigravity to build this, you need to ensure she connects the Verification Tool to the Hangup Logic so the call doesn't just sit there in silence after the "Allah Hafiz."
+The Master Command for Phase 6:
+**"Antigravity, implement Phase 6: The Verification Tool.
+In agentic_suite.py, create the verify_resolution tool.
+It must update the complaints table (outbound_status='completed', citizen_feedback='verified') for the given ticket_id.
+After the database update, Sarah must fetch and play the resolved_farewell (WAV or TTS) from the agents table.
+Finally, the tool must trigger our aggressive 6-second SIP hangup logic. Ensure the _is_terminating lock is active so no other tools can fire."**
+Why this is a "Win" for Global Access:
+By the end of Phase 6, you will have a database full of "Verified" complaints. You can show your client a report that says: "We resolved 100 complaints, and 95 citizens personally confirmed it via Sarah's robocall." That is data no one else in Pakistan can provide right now.
+Phase 7: The "Re-Open Tool" (Status: Re-Opened)
+If the user presses 2:
+Tool: reopen_complaint(ticket_id).
+Logic: CRITICAL STEP. Flips the ticket status from Resolved back to Unresolved and logs the failure.
+Audio: Sarah plays the "Shikayat mutalqa afsaraan ko bhej di gai" speech and hangs up.
+Phase 7: The "Re-Open Tool" (Status: Re-Opened)
+1. The Tool Logic (reopen_complaint)
+This is a new Python function inside agentic_suite.py. It is a "Terminal Tool," meaning once it finishes, the call is over.
+Instructions for Antigravity:
+"Create a new asynchronous tool called reopen_complaint(ticket_id: str).
+The Logic Sequence:
+Database Update: Execute an SQL UPDATE on the complaints table.
+Set status = 'Unresolved'.
+Set citizen_feedback = 'still_issue'.
+Append a note to the internal_logs: "Re-opened via Automated Outbound Verification."
+Metadata Tagging: Mark the outbound_status as 'completed'.
+Audio Trigger: Fetch the unresolved_farewell_text (or WAV) from the agent settings.
+Session Termination: Trigger the 6-second background disconnect task."
+2. Sarah's Verbal Response (The Empathy Bridge)
+Because the citizen is likely frustrated that their issue isn't fixed, the speech must be professional and reassuring.
+The Script (Stored in GUI from Phase 1):
+"Maaf kijiyega. Ap ki shikayat (Ticket ID) ko dobarah mutalqa afsaraan tak bhej diya gaya hai. Hamari team jald is par kaam shuru kar degi. Suthra Punjab helpline par call karne ka shukria. Allah Hafiz."
+Technical Execution:
+Before Sarah speaks this, the tool must call self.session.stop_speech() to kill any LLM "chatting."
+The tool plays the audio using self.session.say(farewell_text).
+3. The "Matrix" Integration
+Sarah’s brain needs to know when to use this tool. You don't want her to reopen a ticket if someone just says "Hello."
+Instructions for Antigravity:
+"Update Sarah’s System Prompt to include the Outbound Verification Logic:
+If the user expresses that the problem is NOT resolved, or if they press '2' on their keypad (DTMF), you MUST immediately call reopen_complaint.
+Do not try to argue or ask for more details. Just acknowledge and trigger the tool."
+4. Database Integrity & Status Flipping
+This is where the "Complaint Registry" page updates automatically.
+The Data Flow:
+Citizen presses 2.
+Tool updates DB status to Unresolved.
+The Citizen Complaints Page (Frontend) refreshes.
+The ticket SP-30 immediately turns Red (or whatever color you use for unresolved) so the field officers see it's back on their plate.
+🧠 Architect's Brainstorming: The "Feedback Loop"
+Why this Phase is powerful: By moving the ticket back to Unresolved, you are creating a Failure Log. You can now tell your client: "Sir, 20% of the tickets your officers marked as 'Resolved' were actually still broken, and my Sarah found them." This is the data that makes the Suthra Punjab project successful.
+Handling the DTMF (Keypad): If a user is in a noisy area, Sarah might not hear them say "Nahi" (No). We should ensure Antigravity listens for the DTMF Tone '2'.
+Instructions for Antigravity:
+"Ensure the telephony-agent is subscribed to DigitEvent. If digit == '2', treat it as a hard trigger for the reopen_complaint tool."
+Ready to proceed with Phase 7 instructions?
+This is the "Teeth" of your system—it gives the citizen the power to hold the officials accountable.
+Phase 8: Outbound GUI Page (Verification Registry)
+A dedicated page for the client to see Robocall results.
+Features: A list of all automated calls made, the duration of the call, and exactly what the citizen pressed (1 or 2).
+Filter: See only "Failed Verifications" (where citizens pressed 2).
+Phase 8: The Verification Registry (Outbound Dashboard)
+1. The "Call Intelligence" Table
+This is the main view. It should feel like a "Log Book" of every interaction Sarah has initiated.
+The Instructions for Antigravity:
+"Create a new page in the Dashboard called 'Verification Registry'. This page must display a table with the following columns:
+Timestamp: When the call was made.
+Ticket ID: Linked to the Citizen Complaint (e.g., SP-30).
+Citizen Number: The phone number dialed.
+Call Status: (Answered, Busy, No Answer, Failed).
+Duration: How many seconds the call lasted.
+Citizen Feedback: A high-visibility badge:
+🟢 Verified (Input 1): Citizen confirmed the fix.
+🔴 Re-Opened (Input 2): Citizen said the issue persists.
+⚪ No Input: Call connected but no button was pressed."
+2. The "Resolution Watch" Filter
+The client doesn't want to scroll through 1,000 successful calls. They want to find the problems immediately.
+The Instructions for Antigravity:
+"Implement a 'Quick Filter' bar at the top of the Verification Registry:
+Status Toggle: A one-click button to 'Show Only Failed Verifications'.
+Search Bar: Search by Ticket ID or Phone Number.
+Date Range: Filter results by today, this week, or custom dates.
+Export Button: Allow the client to download the filtered list as a CSV/Excel file for reporting to higher authorities."
+3. Deep-Link Integration (The "Action" Button)
+If a citizen presses 2, the client needs to see why.
+The Instructions for Antigravity:
+"Each row in the table should have a 'View Complaint' button. Clicking this should take the user directly to the original Citizen Complaints Registry page for that specific Ticket ID so they can see the original photos, location, and history."
+🧠 The Architect’s Logic: Why this is Powerful
+The "Anti-Corruption" Metric
+By showing the Duration, you prove the call actually happened. If a call lasted 25 seconds and resulted in a "Verified" status, it's a real confirmation. If it lasted 2 seconds, it was likely a hangup. This level of detail makes the Global Access system "un-fakeable."
+Automating the "Status Flip"
+This page isn't just for looking at data. In the background (Phase 7), if a record shows up here as 🔴 Re-Opened, the system has already:
+Changed the main complaints table status from Resolved back to Unresolved.
+Notified the assigned officer that the citizen rejected the resolution.
+📅 Final Instructions for Antigravity (Phase 8)
+You can use this prompt when you are ready to build the UI:
+"Antigravity, execute Phase 8: Verification Registry. Create a dedicated dashboard page that pulls data from the complaints table focusing on outbound call results. The table must show Ticket ID, Duration, and Citizen Feedback (1 or 2). Most importantly, implement a filter to 'Show Only Failed Verifications' so our client can instantly see which tickets were falsely marked as resolved. Ensure the UI matches our current professional theme."
+How does this registry sound for your client?
+This page will essentially be their "Daily Report" to show how many people are actually happy with the government's work. Once we finish this, we only have Phase 9 (Media Management) and Phase 10 (Scalability) left!
+Phase 9: Audio Asset Management (GUI-Based)
+Keeping it 100% dynamic as you requested.
+GUI Feature: A "Media Library" specifically for Outbound.
+Control: The client can upload a new "Allah Hafiz" recording for the robocall without touching a single line of code.
+Phase 9: Audio Asset Management (GUI-Based)
+The goal is to treat audio files like "Variables." Sarah shouldn't look for farewell.wav; she should look for the Current_Resolved_Farewell_ID in the database.
+1. The "Media Vault" (Storage Strategy)
+We need a centralized place to store these files so both the Frontend and the AI Worker can reach them.
+Storage Location: A dedicated /uploads/audio/outbound/ directory on the server or an S3-compatible bucket.
+Database Table (media_assets): * id: Primary Key.
+file_name: Original name (e.g., punjab_greeting_v2.wav).
+file_path: The URL or internal path.
+asset_type: (e.g., greeting, resolved_farewell, unresolved_farewell).
+is_active: Boolean to toggle which one is currently "Live."
+2. The Dashboard Interface (The "Media Library" UI)
+This is a new page in the Global Access Dashboard where the user manages the "Voice" of the outbound agent.
+Feature
+Description
+Drag & Drop Uploader
+Upload .wav or .mp3 files directly from the browser.
+Audio Preview
+A small play button next to each file so the client can listen before making it live.
+Mapping Dropdown
+A simple selector: "Use this file for [Outbound Greeting ▾]."
+TTS Fallback Toggle
+A checkbox: "If audio file is missing, use Text-to-Speech instead."
+3. The Logic: "Text vs. Audio" Priority
+This is how we keep it 100% dynamic. Sarah’s brain should follow this hierarchy when making an outbound call:
+Check for Active Audio Asset: Does the GUI have a .wav file mapped to this state?
+Play WAV: If yes, Sarah plays the high-quality recording.
+Fallback to TTS: If no file is uploaded, Sarah reads the outbound_text field using her AI voice.
+Architect's Note: This ensures the system never fails. If the client deletes a file by mistake, Sarah doesn't go silent; she just switches to her AI voice automatically.
+🛠️ Instructions for Antigravity (Phase 9 Implementation)
+When you are ready to have Antigravity build this, use these specific technical mandates:
+A. The Backend "Asset Manager"
+"Implement an AudioResourceManager class in the backend. It must handle file uploads, verify they are valid telephony-grade WAV files (8kHz or 16kHz mono is best for Asterisk), and store the metadata in the media_assets table."
+B. The AI Worker Update
+"Update the AgenticSuite tools. Instead of self.session.say("Allah Hafiz"), the tool must query the database for the active_farewell_audio_url. If a URL exists, use agent.session.play_audio(url). If not, use agent.session.say(text_from_db)."
+C. The "Zero-Touch" Mapping
+"In the GUI, when a user uploads a new 'Resolved Farewell', the system must automatically set is_active = false for the old file and true for the new one. No manual database editing allowed."
+📈 Why Phase 9 is a Game Changer
+Brand Consistency: The client can hire a professional voice actor to record the greetings, making the robocall sound extremely official.
+A/B Testing: They can test different greetings (e.g., a "Polite" version vs. a "Direct" version) just by clicking a button in your dashboard.
+Scalability: You can reuse this Media Library for any future agent you build (Traffic police, Health department, etc.).
+Phase 10: Scalability & Anti-Spam Logic
+Ensuring you don't overwhelm your SIP trunk.
+Logic: Set "Concurrent Call Limits" (e.g., only 5 robocalls at a time).
+Retry Logic: If the citizen doesn't pick up, Sarah should wait 2 hours and try again, but only up to 3 times total.
+🛡️ Phase 10: The "Governor" (Scalability & Anti-Spam)
+When Sarah starts making thousands of calls, you must protect your SIP trunk (Nayatel/NTC) and your server’s reputation.
+1. Concurrent Call Limits
+If you try to blast 100 calls at once, your SIP provider might flag you as a spammer or your server CPU will spike.
+The Logic: We implement a "Semaphore" or a "Lease" system. Sarah checks: "Are there 5 calls active right now?" If yes, she waits until one finishes before dialing the next.
+The Benefit: This ensures high-quality audio for every call and keeps your SIP channel clear for incoming complaints.
+2. Intelligent Retry Logic
+A citizen might be driving, praying, or in a meeting.
+The Rule of 3: * Attempt 1: Immediate (after ticket is marked resolved).
+Attempt 2: +2 hours later.
+Attempt 3: Next morning at 10:00 AM.
+Quiet Hours: The system must not call between 9:00 PM and 9:00 AM. Antigravity needs to build a "Time Window" check into the dispatcher.
+🎙️ Sarah's Outbound Voice: Pure TTS vs. Hybrid
+You made the right choice with Pure TTS (Text-to-Speech). Here is the technical reason why:
+Consistency: In a "Hybrid" model, the recording sounds like a human, but the Ticket ID ("SP-30") sounds like a robot. This "jump" in voice quality feels glitchy to the listener.
+Inflection: Modern TTS (like UpliftAI or OpenAI) can now say "SP-30" with the correct Urdu/Punjabi rhythm.
+Speed: Generating a full TTS stream is actually faster for the server than trying to "stitch" together a WAV file and a TTS string in real-time.
+🚀 Phase 1: The "Engine Start" (Instructions for Antigravity)
+To begin, copy and paste this exact instruction to Antigravity. This will prepare your database and GUI for the entire Outbound project.
+Copy and Paste to Antigravity:
+"SYSTEM UPGRADE: Phase 1 - Sarah Outbound (Robocall) Foundation.
+We are expanding Sarah to include an automated Outbound Verification system. Do not disturb existing Inbound logic. Execute the following foundational changes:
+1. Database Schema Expansion (PostgreSQL):
+Table complaints: Add outbound_status (Enum: pending, calling, completed, failed, no_answer), citizen_feedback (Enum: verified, still_issue), outbound_retry_count (Integer, default 0), and last_called_at (Timestamp).
+Table agents: Add columns for outbound_greeting_text, outbound_greeting_wav_url, resolved_farewell_text, resolved_farewell_wav_url, unresolved_farewell_text, and unresolved_farewell_wav_url.
+2. GUI Expansion (Frontend):
+Agent Settings: Add a new tab called 'Outbound Robocall'.
+Inputs: Create fields for the Initial Outbound Greeting and the two farewell scenarios (Resolved vs. Unresolved).
+Functionality: Users must be able to choose between entering Text (for TTS) or uploading a WAV file for each segment, exactly like the Inbound greeting.
+3. Backend API:
+Update the Agent settings API to handle these new fields.
+Ensure all changes are non-breaking and the database migrations are safe for a live server. Commit and push to main."
+What's next for you?
+Once Antigravity finishes Phase 1, your Dashboard will have the "Outbound" settings. You can then start writing the Urdu scripts for Sarah's robocall.
+Pro-Tip: For the Ticket ID, tell Antigravity to use a placeholder like {ticket_id} in the text. This makes it easy for the script to swap "SP-30" into the sentence automatically.
+🧠 Brainstorming Sarah's Voice Logic
+The Dynamic Greeting Strategy: To make Sarah speak the Ticket ID (SP-30) naturally, we have two choices:
+Pure TTS (Text-to-Speech): She says the whole sentence in her AI voice. This is the easiest for Antigravity to build.
+Hybrid Audio: A high-quality recording plays "Hamara record ka mutabiq ap ki complain..." and then Sarah's AI voice fills in the gap "SP-30" followed by the rest of the recording.
+My Recommendation: Use Pure TTS for the outbound calls. Since it's a "Verification Call," people expect a slightly "Digital" feel, and it allows Sarah to say the person's name and Ticket ID perfectly every time.
+The "Lead Architect" Perspective
+Hamza, this module is what will win you the contract renewal. Most systems just "close" a ticket. Your system proves it was closed by calling the citizen.

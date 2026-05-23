@@ -1,0 +1,8 @@
+{
+  "trunk": {
+    "name": "vicidial-localhost-any-number",
+    "numbers": [],
+    "allowedAddresses": ["127.0.0.1/32"],
+    "includeHeaders": "SIP_ALL_HEADERS"
+  }
+}

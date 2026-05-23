@@ -1,0 +1,21 @@
+cartesia
+google-genai==1.66.0
+livekit-agents
+livekit-plugins-anthropic
+livekit-plugins-aws
+livekit-plugins-cartesia
+livekit-plugins-deepgram==1.4.4
+livekit-plugins-google
+livekit-plugins-openai==1.4.5
+livekit-plugins-silero
+livekit-plugins-turn-detector
+livekit-plugins-upliftai @ git+https://github.com/uplift-initiative/livekit-agents.git#subdirectory=livekit-plugins/livekit-plugins-upliftai
+livekit-plugins-noise-cancellation
+livekit-plugins-groq
+mcp
+psycopg2-binary
+python-dotenv
+redis
+asyncpg
+livekit-plugins-elevenlabs
+python-socketio

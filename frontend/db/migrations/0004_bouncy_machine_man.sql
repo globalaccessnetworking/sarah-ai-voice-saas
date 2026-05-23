@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "outbound_watchdog_nudge_text" text;
