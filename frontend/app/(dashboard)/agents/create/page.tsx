@@ -683,9 +683,12 @@ function BehaviorTab({ form, setForm, getPriceFor }: { form: AgentFormState; set
                                 })()}
                             </div>
                             <SelectField value={form.rtProvider} onChange={(v) => {
-                                set("rtProvider", v);
-                                set("rtModel", RT_MODELS[v]?.[0]?.value ?? "");
-                                set("rtVoice", RT_VOICES[v]?.[0]?.value ?? "");
+                                setForm({
+                                    ...form,
+                                    rtProvider: v,
+                                    rtModel: RT_MODELS[v]?.[0]?.value ?? "",
+                                    rtVoice: RT_VOICES[v]?.[0]?.value ?? ""
+                                });
                             }}>
                                 <option value="google">Google (Gemini Live) ⭐</option>
                                 <option value="google_cloud">Google Cloud (Vertex AI)</option>
@@ -833,8 +836,11 @@ function SttTab({ form, setForm, getPriceFor }: { form: AgentFormState; setForm:
                         })()}
                     </div>
                     <SelectField value={form.sttProvider} onChange={(v) => {
-                        set("sttProvider", v);
-                        set("sttModel", STT_MODELS[v]?.[0]?.value ?? "");
+                        setForm({
+                            ...form,
+                            sttProvider: v,
+                            sttModel: STT_MODELS[v]?.[0]?.value ?? ""
+                        });
                     }}>
                         <option value="deepgram">Deepgram ⭐ Recommended</option>
                         <option value="openai">OpenAI</option>
@@ -983,9 +989,18 @@ function TtsTab({ form, setForm, getPriceFor }: { form: AgentFormState; setForm:
                         })()}
                     </div>
                     <SelectField value={form.ttsProvider} onChange={(v) => {
-                        set("ttsProvider", v);
-                        set("ttsModel", TTS_MODELS[v]?.[0]?.value ?? "");
-                        set("ttsVoiceId", "");
+                        let voiceId = "";
+                        if (v === "google" || v === "google_gemini") voiceId = "Puck";
+                        else if (v === "elevenlabs") voiceId = ELEVENLABS_VOICES[0].value;
+                        else if (v === "cartesia") voiceId = CARTESIA_VOICES[0].value;
+                        else if (v === "openai" || v === "azure_openai") voiceId = "nova";
+
+                        setForm({
+                            ...form,
+                            ttsProvider: v,
+                            ttsModel: TTS_MODELS[v]?.[0]?.value ?? "",
+                            ttsVoiceId: voiceId
+                        });
                     }}>
                         <option value="cartesia">Cartesia ⚡ Lowest Latency</option>
                         <option value="elevenlabs">ElevenLabs ⭐ Best Quality</option>
