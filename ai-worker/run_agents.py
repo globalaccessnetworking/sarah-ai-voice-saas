@@ -5145,12 +5145,24 @@ The opening message has already been delivered to the user automatically by the 
                 asyncio.create_task(play_wav_greeting(session, greeting_audio_url, initial_greeting))
                 
             elif initial_greeting:
-                # Text-Based Greeting (Fall back - 2.5s generation delay)
+                # Text-Based Greeting
                 fast_greeting = initial_greeting.replace("{{user_number}}", temp_from)
-                if is_realtime:
+                
+                # Outbound SIP Stabilization Delay
+                is_outbound = is_outbound_call or sip_metadata.get("direction") == "outbound" or ctx.room.name.startswith("outbound_")
+                
+                if is_outbound:
+                    delay_sec = float(os.getenv("OUTBOUND_GREETING_DELAY_SEC", "2.5"))
+                    logger.info(f"[OUTBOUND] Waiting {delay_sec}s for SIP answer/media before greeting")
+                    await asyncio.sleep(delay_sec)
+                    
+                    # Outbound deterministic greeting must always use session.say() to guarantee it is spoken exactly
+                    session.say(fast_greeting)
+                elif is_realtime:
                     session.generate_reply(instructions=f"Greet the user with exactly this message: {fast_greeting}")
                 else:
                     session.say(fast_greeting)
+                    
                 logger.info(f"[PBX] Initial text-to-speech greeting triggered: '{fast_greeting[:30]}...'")
         
         # PREEMPTIVE WARMUP for Realtime (Gemini Live)
