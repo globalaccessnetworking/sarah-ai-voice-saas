@@ -2086,10 +2086,26 @@ def get_language_name(lang_code: str) -> str:
 def get_tts(config):
     """Initialize TTS based on configuration"""
     from livekit.plugins import openai, upliftai
+    
     try:
-        from livekit.plugins import cartesia, elevenlabs, google, deepgram
+        from livekit.plugins import deepgram
     except ImportError:
-        cartesia, elevenlabs, google, deepgram = None, None, None, None
+        deepgram = None
+
+    try:
+        from livekit.plugins import cartesia
+    except ImportError:
+        cartesia = None
+
+    try:
+        from livekit.plugins import elevenlabs
+    except ImportError:
+        elevenlabs = None
+
+    try:
+        from livekit.plugins import google
+    except ImportError:
+        google = None
     tts_config = config.get("tts_config", {})
     provider = str(tts_config.get("provider", "cartesia")).lower()
     
