@@ -277,23 +277,41 @@ export default function CampaignsPage() {
                                                             </Link>
                                                             
                                                             {(campaign.status === "idle" || campaign.status === "draft" || campaign.status === "stopped") ? (
-                                                                <button 
-                                                                    onClick={() => handleUpdateStatus(campaign.id, "running")} 
-                                                                    className={`p-2 rounded-md transition-colors ${isPreview ? "text-zinc-600 cursor-not-allowed" : "text-zinc-400 hover:text-green-400 hover:bg-zinc-800"}`} 
-                                                                    title={isPreview ? "Manual/ViciDial campaigns cannot be auto-started" : "Start Campaign"}
-                                                                    disabled={isPreview}
-                                                                >
-                                                                    <Play size={16} />
-                                                                </button>
+                                                                isPreview ? (
+                                                                    <button 
+                                                                        onClick={() => alert("Preview Dialer is coming next. Use Progressive for auto-dial testing.")} 
+                                                                        className="p-2 rounded-md transition-colors text-blue-400 hover:text-blue-300 hover:bg-zinc-800"
+                                                                        title="Open Preview Dialer"
+                                                                    >
+                                                                        <Play size={16} />
+                                                                    </button>
+                                                                ) : (
+                                                                    <button 
+                                                                        onClick={() => handleUpdateStatus(campaign.id, "running")} 
+                                                                        className="p-2 rounded-md transition-colors text-zinc-400 hover:text-green-400 hover:bg-zinc-800"
+                                                                        title="Start Campaign"
+                                                                    >
+                                                                        <Play size={16} />
+                                                                    </button>
+                                                                )
                                                             ) : campaign.status === "paused" ? (
-                                                                <button 
-                                                                    onClick={() => handleUpdateStatus(campaign.id, "resume")} 
-                                                                    className={`p-2 rounded-md transition-colors ${isPreview ? "text-zinc-600 cursor-not-allowed" : "text-zinc-400 hover:text-green-400 hover:bg-zinc-800"}`} 
-                                                                    title={isPreview ? "Manual/ViciDial campaigns cannot be auto-started" : "Resume Campaign"}
-                                                                    disabled={isPreview}
-                                                                >
-                                                                    <Play size={16} />
-                                                                </button>
+                                                                isPreview ? (
+                                                                    <button 
+                                                                        onClick={() => alert("Preview Dialer is coming next. Use Progressive for auto-dial testing.")} 
+                                                                        className="p-2 rounded-md transition-colors text-blue-400 hover:text-blue-300 hover:bg-zinc-800"
+                                                                        title="Open Preview Dialer"
+                                                                    >
+                                                                        <Play size={16} />
+                                                                    </button>
+                                                                ) : (
+                                                                    <button 
+                                                                        onClick={() => handleUpdateStatus(campaign.id, "resume")} 
+                                                                        className="p-2 rounded-md transition-colors text-zinc-400 hover:text-green-400 hover:bg-zinc-800"
+                                                                        title="Resume Campaign"
+                                                                    >
+                                                                        <Play size={16} />
+                                                                    </button>
+                                                                )
                                                             ) : campaign.status === "running" ? (
                                                                 <button onClick={() => handleUpdateStatus(campaign.id, "paused")} className="p-2 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800 rounded-md transition-colors" title="Pause Campaign">
                                                                     <Pause size={16} />

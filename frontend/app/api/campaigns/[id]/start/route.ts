@@ -1,19 +1,9 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@/db';
 import { eq, and } from 'drizzle-orm';
-import redis from '@/lib/redis';
+import { enqueueRedisJob } from '@/lib/queue';
 
 const { campaigns, campaignNumbers, agents, sipTrunks } = schema;
-
-async function pushQueue(queueName: string, payload: unknown) {
-    const body = JSON.stringify(payload);
-    const r = redis as any;
-    if (typeof r.lPush === "function") return r.lPush(queueName, body);
-    if (typeof r.lpush === "function") return r.lpush(queueName, body);
-    if (typeof r.rPush === "function") return r.rPush(queueName, body);
-    if (typeof r.rpush === "function") return r.rpush(queueName, body);
-    throw new Error("Redis client does not support lPush/lpush/rPush/rpush");
-}
 
 function normalizePhone(phone: string) {
     if (!phone) return "";
@@ -94,8 +84,11 @@ export async function POST(
 
         // 5. Enqueue to Redis
         let enqueuedCount = 0;
+        const queueName = 'AI_DIALER_OUTBOUND_QUEUE';
+        
         for (const number of numbersToCall) {
             const sipCallTo = normalizePhone(number.phone);
+            const callerId = campaign.callerId || ((Array.isArray(trunk.numbers) && trunk.numbers.length > 0 && typeof trunk.numbers[0] === 'string') ? trunk.numbers[0] : trunk.name);
             
             const payload = {
                 type: "outbound_campaign_call",
@@ -111,13 +104,26 @@ export async function POST(
                 agent_slug: agent.slug,
                 agent_name: "outbound-agent",
                 sip_trunk_id: trunk.id,
-                caller_id: campaign.callerId || ((Array.isArray(trunk.numbers) && trunk.numbers.length > 0 && typeof trunk.numbers[0] === 'string') ? trunk.numbers[0] : trunk.name),
+                caller_id: callerId,
                 opening_message: campaign.openingMessage,
                 call_goal: campaign.callGoal || `Campaign Outbound Call - ${campaign.name}`,
                 legacy_complaint_mode: false
             };
 
-            await pushQueue('AI_DIALER_OUTBOUND_QUEUE', payload);
+            console.log("[CampaignStart] Enqueueing job", {
+                queueName,
+                campaignId,
+                leadId: number.id,
+                phone: number.phone,
+                sip_call_to: sipCallTo,
+                agent_slug: agent.slug,
+                sip_trunk_id: trunk.id,
+                caller_id: callerId
+            });
+
+            await enqueueRedisJob(queueName, payload);
+            
+            console.log("[CampaignStart] Enqueued job successfully", { queueName, campaignId, leadId: number.id });
             
             // Mark as processing
             await db.update(campaignNumbers)
