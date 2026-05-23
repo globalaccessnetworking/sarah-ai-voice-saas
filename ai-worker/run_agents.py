@@ -3709,6 +3709,14 @@ async def entrypoint(ctx: JobContext):
         logger.error(f"Job REJECTED: No running configuration found for slug '{agent_slug or 'UNKNOWN'}'")
         return
 
+    # Strict Legacy Suthra/Complaint Detector
+    _meta_obj_local = locals().get("meta_obj", {})
+    _legacy_cfg = str(agent_config.get("extra_config", {}).get("legacy_complaint_mode", "")).lower() == "true"
+    _legacy_meta = str(_meta_obj_local.get("legacy_complaint_mode", "")).lower() == "true"
+    _legacy_slugs = ["suthra-sarah", "sarah-pioneer-urdu-punjabi", "outbound-sarah-robocall"]
+    _is_legacy_slug = str(agent_config.get("slug", "")).lower() in _legacy_slugs or str(agent_config.get("name", "")).lower() in _legacy_slugs
+    is_legacy_complaint_agent = _legacy_cfg or _legacy_meta or _is_legacy_slug
+
     # Phase 2: Configuration Mapping (Chat-to-Voice)
     if agent_config and agent_type == "chat":
         try:
@@ -3886,67 +3894,73 @@ async def entrypoint(ctx: JobContext):
 
     # 2. Early Memory Retrieval & HARD STATE LOCK
     memory_summary = None
-    caller_name = "Citizen"
+    _meta_obj_local = locals().get("meta_obj", {})
+    if is_legacy_complaint_agent:
+        caller_name = "Citizen"
+    else:
+        caller_name = _meta_obj_local.get("contact_name") or _meta_obj_local.get("lead_name") or "User"
     caller_phone = sip_metadata.get("from_number", "")
 
-    # --- ENTERPRISE FIX: The Hard State Database Lock ---
-    # Ask PostgreSQL directly — 0.01s, 100% accurate, no LLM guessing.
     active_ticket_id = None
     db_name = None
-    try:
-        if caller_phone:
-            db_result = await get_active_ticket_from_db(caller_phone)
-            if db_result:
-                active_ticket_id = db_result.get("ticket_id")
-                db_name = db_result.get("name")
-    except Exception as e:
-        logger.error(f"DB Lock Check Error: {e}")
 
-    # Standard memory lookup (still runs for caller name resolution)
-    try:
-        if caller_phone:
-            async with asyncio.timeout(1.5):
-                memory_summary = await asyncio.to_thread(get_memory_prompt, caller_phone)
-                if memory_summary:
-                    import re
-                    name_match = re.search(r"The caller, ([^,]+),", memory_summary)
-                    if name_match:
-                        caller_name = name_match.group(1).strip()
-    except Exception as e:
-        logger.error(f"Early memory retrieval timeout/error: {e}")
+    if is_legacy_complaint_agent:
+        # --- ENTERPRISE FIX: The Hard State Database Lock ---
+        # Ask PostgreSQL directly - 0.01s, 100% accurate, no LLM guessing.
+        try:
+            if caller_phone:
+                db_result = await get_active_ticket_from_db(caller_phone)
+                if db_result:
+                    active_ticket_id = db_result.get("ticket_id")
+                    db_name = db_result.get("name")
+        except Exception as e:
+            logger.error(f"DB Lock Check Error: {e}")
 
-    # FORCE INJECT HARD STATE INTO LLM PROMPT — overwrites all soft memory
-    if active_ticket_id:
-        logger.info(f"\U0001f512 HARD STATE LOCK: Found pending ticket {active_ticket_id} for {caller_phone}")
+        # Standard memory lookup (still runs for caller name resolution)
+        try:
+            if caller_phone:
+                async with asyncio.timeout(1.5):
+                    memory_summary = await asyncio.to_thread(get_memory_prompt, caller_phone)
+                    if memory_summary:
+                        import re
+                        name_match = re.search(r"The caller, ([^,]+),", memory_summary)
+                        if name_match:
+                            caller_name = name_match.group(1).strip()
+        except Exception as e:
+            logger.error(f"Early memory retrieval timeout/error: {e}")
 
-        # Priority: Use name from DB if found, else use name from soft memory
-        final_caller_name = db_name or caller_name
+        # FORCE INJECT HARD STATE INTO LLM PROMPT - overwrites all soft memory
+        if active_ticket_id:
+            logger.info(f"🔒 HARD STATE LOCK: Found pending ticket {active_ticket_id} for {caller_phone}")
 
-        # Format ticket ID for Urdu TTS phonetic pronunciation (SP-340 → "S P 3 4 0")
-        _bare = active_ticket_id.replace("SP-", "S P ")
-        phonetic_id = " ".join(_bare)
+            # Priority: Use name from DB if found, else use name from soft memory
+            final_caller_name = db_name or caller_name
 
-        # Read the template from the GUI (agent tools_config) — zero hardcoding
-        _tools_cfg = agent_config.get("tools_config", {}) if isinstance(agent_config.get("tools_config"), dict) else {}
-        _default_template = (
-            "[CRITICAL DATABASE OVERRIDE]: The system database confirms that this caller, "
-            "{caller_name}, has an active, unresolved complaint with Ticket ID: {ticket_id}. "
-            "You MUST immediately execute the RETURNING CALLER PROTOCOL: "
-            "1. Greet them warmly as {caller_name} Sahib/Sahiba. "
-            "2. Tell them their ticket number slowly, pronouncing each character: {phonetic_id}. "
-            "3. Do NOT ask for their issue, district, or address again."
-        )
-        _template = _tools_cfg.get("returning_caller_prompt", _default_template)
-        memory_summary = _template.format(
-            caller_name=final_caller_name,
-            ticket_id=active_ticket_id,
-            phonetic_id=phonetic_id,
-        )
-        
-        # Update caller_name for logging/DB registration
-        caller_name = final_caller_name
-    elif memory_summary:
-        logger.info(f"Memory resolved early for {caller_phone}: {caller_name}")
+            # Format ticket ID for Urdu TTS phonetic pronunciation
+            _bare = active_ticket_id.replace("SP-", "S P ")
+            phonetic_id = " ".join(_bare)
+
+            # Read the template from the GUI (agent tools_config) - zero hardcoding
+            _tools_cfg = agent_config.get("tools_config", {}) if isinstance(agent_config.get("tools_config"), dict) else {}
+            _default_template = (
+                "[CRITICAL DATABASE OVERRIDE]: The system database confirms that this caller, "
+                "{caller_name}, has an active, unresolved complaint with Ticket ID: {ticket_id}. "
+                "You MUST immediately execute the RETURNING CALLER PROTOCOL: "
+                "1. Greet them warmly as {caller_name} Sahib/Sahiba. "
+                "2. Tell them their ticket number slowly, pronouncing each character: {phonetic_id}. "
+                "3. Do NOT ask for their issue, district, or address again."
+            )
+            _template = _tools_cfg.get("returning_caller_prompt", _default_template)
+            memory_summary = _template.format(
+                caller_name=final_caller_name,
+                ticket_id=active_ticket_id,
+                phonetic_id=phonetic_id,
+            )
+            
+            # Update caller_name for logging/DB registration
+            caller_name = final_caller_name
+        elif memory_summary:
+            logger.info(f"Memory resolved early for {caller_phone}: {caller_name}")
     
     # [FIX] Early Database Registration: Pass the resolved name to the DB immediately
     if not is_agent_tester_call and call_history:
@@ -3991,8 +4005,6 @@ async def entrypoint(ctx: JobContext):
     initial_greeting_raw = agent_config.get("initial_greeting", "").strip()
 
     # Fancy Suthra Punjab prompt & greeting injection (Legacy Complaint Agents Only)
-    is_legacy_complaint_agent = agent_config.get("is_complaint_agent", False) or "pioneer" in agent_slug.lower() or "suthra" in agent_slug.lower()
-    
     if is_legacy_complaint_agent:
         # 1. SCRUBBING: Remove any stale instructions from the database prompt to prevent conflicts
         import re
@@ -4771,11 +4783,17 @@ The opening message has already been delivered to the user automatically by the 
     # Prepend dynamic rules to the system prompt
     current_prompt = agent_config.get("system_prompt", "")
     agent_config["system_prompt"] = dialer_instructions + "\n\n" + suthra_prompt_injection + "\n\n" + current_prompt
-    logger.info(f"Sovereign Prompt Injected with dynamic JSONB triggers and dialer instructions.")
+    if is_legacy_complaint_agent:
+        logger.info(f"Sovereign Prompt Injected with dynamic JSONB triggers and dialer instructions.")
+    else:
+        logger.info(f"Generic dialer instructions injected.")
 
     # Initialize 10-Tool Agentic Matrix via ToolProvider (Restored V9 Order)
     provider = None
-    if SovereignToolProvider:
+    _tools_config = agent_config.get("tools_config", [])
+    _has_explicit_tools = isinstance(_tools_config, list) and len(_tools_config) > 0
+    
+    if SovereignToolProvider and (is_legacy_complaint_agent or _has_explicit_tools):
         try:
             # Use the already extracted SIP from_number (from Phase 3)
             # Normalization Policy: Local Pakistani Format (03XXXXXXXXX)
@@ -4794,14 +4812,20 @@ The opening message has already been delivered to the user automatically by the 
             # Note: SovereignToolProvider uses session_ref/room for late binding
             provider = SovereignToolProvider(session_ref, ctx.room, agent_config, from_number=asterisk_from)
             tools_list.extend(provider.get_tools())
-            logger.info("Successfully registered Sovereign Tool Suite (Matrix V9).")
+            if is_legacy_complaint_agent:
+                logger.info("Successfully registered Sovereign Tool Suite (Matrix V9).")
         except Exception as e:
             logger.error(f"Failed to initialize SovereignToolProvider: {e}")
+    elif not is_legacy_complaint_agent:
+        logger.info("No tools enabled for generic agent.")
 
     # Sarah's Brain: Tool Matrix Initialization (Restored Working Pattern)
     if tools_list:
         agent_params["tools"] = tools_list
-        logger.info(f"Sarah's Brain: Tool Matrix Activated ({len(tools_list)} tools) via direct list.")
+        if is_legacy_complaint_agent:
+            logger.info(f"Sarah's Brain: Tool Matrix Activated ({len(tools_list)} tools) via direct list.")
+        else:
+            logger.info(f"Generic Voice Agent: Tool Matrix Activated ({len(tools_list)} tools) via direct list.")
 
     # Optimized for Suthra Punjab Telephony: Use RoomOptions instead of Agent param
     # Sarah V23.15 Phase 3 Bypass: Explicitly disabling FFI filters to save 200ms and stop crashes.
@@ -4879,7 +4903,10 @@ The opening message has already been delivered to the user automatically by the 
 
         if target_participant:
             room_options.participant_identity = target_participant.identity
-            logger.info(f"≡ƒÅé≡ƒÅ╗ SYNC: Sarah is now listening to SIP Caller: {target_participant.identity}")
+            if is_legacy_complaint_agent:
+                logger.info(f"🏂🏻 SYNC: Sarah is now listening to SIP Caller: {target_participant.identity}")
+            else:
+                logger.info(f"🏂🏻 SYNC: Generic voice agent listening to SIP Caller: {target_participant.identity}")
         else:
             # Fallback: Default to auto-subscribe all (Safety Mode)
             room_options.participant_identity = ""
@@ -5847,7 +5874,7 @@ The opening message has already been delivered to the user automatically by the 
                             "caller_id": caller_phone,
                             "end_reason": end_reason,
                             "recording_id": auto_record_egress_id,
-                            "sentiment_analysis": agent_config.get("tools_config", {}).get("sentiment_analysis", False),
+                            "sentiment_analysis": (agent_config.get("tools_config", {}) if isinstance(agent_config.get("tools_config"), dict) else {}).get("sentiment_analysis", False),
                             "duration": time.time() - call_tracker.call_start_time if call_tracker.call_start_time else 0
                         }
                     ))

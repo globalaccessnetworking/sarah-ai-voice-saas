@@ -62,12 +62,15 @@ async def make_outbound_call(phone_number: str, trunk_id: str, opening_message: 
         "room_name": room_name,
         "external_record_id": external_record_id,
         
-        # Legacy Backward Compatibility Aliases
-        "citizen_name": contact_name,
-        "ticket_id": external_record_id,
-        
         "config": config_block
     }
+
+    # Legacy Backward Compatibility Aliases
+    legacy_mode = os.getenv("LEGACY_COMPLAINT_MODE", "").lower() == "true" or "--legacy" in sys.argv
+    if legacy_mode:
+        metadata_obj["citizen_name"] = contact_name
+        metadata_obj["ticket_id"] = external_record_id
+        metadata_obj["legacy_complaint_mode"] = True
 
     metadata = json.dumps(metadata_obj, ensure_ascii=False)
 
