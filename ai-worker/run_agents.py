@@ -2087,9 +2087,9 @@ def get_tts(config):
     """Initialize TTS based on configuration"""
     from livekit.plugins import openai, upliftai
     try:
-        from livekit.plugins import cartesia, elevenlabs, google
+        from livekit.plugins import cartesia, elevenlabs, google, deepgram
     except ImportError:
-        cartesia, elevenlabs, google = None, None, None
+        cartesia, elevenlabs, google, deepgram = None, None, None, None
     tts_config = config.get("tts_config", {})
     provider = str(tts_config.get("provider", "cartesia")).lower()
     
@@ -2116,6 +2116,8 @@ def get_tts(config):
             tts_kwargs["speed"] = speed
         return cartesia.TTS(**tts_kwargs)
     elif provider == "deepgram":
+        if deepgram is None:
+            raise ValueError("Deepgram TTS selected in GUI but livekit-plugins-deepgram is not installed/importable.")
         # Deepgram Aura TTS (default: Asteria)
         # Model format: aura-[voicename]-[language]
         api_key = config_service.get_api_key("deepgram")
