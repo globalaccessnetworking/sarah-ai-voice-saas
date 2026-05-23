@@ -1402,6 +1402,16 @@ def get_region_prefix(region: str) -> str:
     return region_mapping.get(region, "global")
 
 
+def has_enabled_tools(tools):
+    if tools is None:
+        return False
+    if isinstance(tools, (list, tuple, set)):
+        return len(tools) > 0
+    if isinstance(tools, dict):
+        return len(tools.keys()) > 0
+    return False
+
+
 def get_llm(config):
     """Initialize LLM based on configuration"""
     from livekit.plugins import openai
@@ -1413,6 +1423,21 @@ def get_llm(config):
     provider = llm_config.get("provider", "openai")
     model = llm_config.get("model", "gpt-4o")
     temperature = llm_config.get("temperature", 0.7)
+
+    _tc = config.get("tools_config", [])
+    if isinstance(_tc, str):
+        import json
+        try:
+            _tc = json.loads(_tc)
+        except Exception:
+            _tc = []
+    tools_enabled = has_enabled_tools(_tc)
+    
+    openai_kwargs = {"temperature": temperature}
+    if tools_enabled:
+        openai_kwargs["parallel_tool_calls"] = False
+
+    logger.info(f"OpenAI LLM initialized: tools_enabled={tools_enabled}, parallel_tool_calls={'parallel_tool_calls' in openai_kwargs}")
 
     if provider == "openai":
         # Handle "instant" models - strip suffix and set reasoning_effort to none
@@ -1426,7 +1451,7 @@ def get_llm(config):
             logger.info(f"Using instant mode for {actual_model} (reasoning_effort=none)")
 
         api_key = config_service.get_api_key("openai")
-        return openai.LLM(model=actual_model, api_key=api_key, temperature=temperature, parallel_tool_calls=False, **extra_params)
+        return openai.LLM(model=actual_model, api_key=api_key, **openai_kwargs, **extra_params)
     elif provider == "google" or provider == "google_gemini":
         # Google Gemini models via consumer API (uses GOOGLE_API_KEY)
         api_key = config_service.get_api_key("google") or config_service.get_api_key("google_gemini")
@@ -1440,8 +1465,7 @@ def get_llm(config):
             model=model,
             api_key=api_key,
             base_url="https://api.deepseek.com/v1",
-            temperature=temperature,
-            parallel_tool_calls=False
+            **openai_kwargs
         )
     elif provider == "mistral":
         # Mistral via OpenAI-compatible API
@@ -1451,8 +1475,7 @@ def get_llm(config):
             model=model,
             api_key=api_key,
             base_url="https://api.mistral.ai/v1",
-            temperature=temperature,
-            parallel_tool_calls=False
+            **openai_kwargs
         )
     elif provider == "together_ai":
         # Together AI via OpenAI-compatible API
@@ -1462,8 +1485,7 @@ def get_llm(config):
             model=model,
             api_key=api_key,
             base_url="https://api.together.xyz/v1",
-            temperature=temperature,
-            parallel_tool_calls=False
+            **openai_kwargs
         )
     elif provider == "google_cloud":
         # Google Gemini models via Vertex AI (Google Cloud, uses Google Cloud credentials)
@@ -3073,6 +3095,8 @@ async def typed_handler({params_str}):
 
         return HandoffAgent(greeting=handoff_greeting, **agent_params)
 
+    _attached_tools = agent_params.get("tools", [])
+    logger.info(f"Runtime tools attached: {len(_attached_tools)}")
     return voice.Agent(**agent_params)
 
 
@@ -4868,6 +4892,8 @@ The opening message has already been delivered to the user automatically by the 
     # Sarah V23.16: SDK 1.5.1 Alignment
     # Move min_endpointing_delay to the top-level for maximum reaction speed (50ms).
     # Removed unsupported min_sentences_to_stream to resolve Agent constructor crash.
+    _attached_tools = agent_params.get("tools", [])
+    logger.info(f"Runtime tools attached: {len(_attached_tools)}")
     agent = voice.Agent(
         min_endpointing_delay=agent_response_delay,
         **agent_params
