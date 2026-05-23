@@ -23,7 +23,8 @@ SIP_TRUNK_ID = os.getenv("LIVEKIT_SIP_TRUNK_ID", "ST_UcwwHJJ7Kf38") # Nayatel Fa
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
-QUEUE_NAME = "sarah_robocall_queue"
+QUEUE_NAME = os.getenv("AI_DIALER_OUTBOUND_QUEUE", "ai_dialer_outbound_queue")
+FALLBACK_QUEUE = "sarah_robocall_queue"
 
 # DB Config
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -33,7 +34,7 @@ class OutboundDialer:
         self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
         self.db_conn = psycopg2.connect(DATABASE_URL)
         self.db_conn.autocommit = True
-        logger.info("Outbound Dialer initialized.")
+        logger.info(f"Outbound Dialer initialized. Listening on {QUEUE_NAME} and {FALLBACK_QUEUE}")
 
     async def get_db_cursor(self):
         if self.db_conn.closed:
@@ -75,8 +76,10 @@ class OutboundDialer:
         call_goal = payload.get("call_goal") or payload.get("issue_type") or "General Inquiry"
         campaign_id = payload.get("campaign_id") or "default_campaign"
         agent_name = payload.get("agent_name") or "outbound-agent"
-        trunk_id = payload.get("trunk_id") or SIP_TRUNK_ID
+        agent_slug = payload.get("agent_slug")
+        trunk_id = payload.get("sip_trunk_id") or payload.get("trunk_id") or SIP_TRUNK_ID
         agent_config = payload.get("config", {})
+        opening_message = payload.get("opening_message")
 
         clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "").strip()
         timestamp_val = int(time.time())
@@ -90,6 +93,7 @@ class OutboundDialer:
             "direction": "outbound",
             "call_direction": "outbound",
             "agent_id": payload.get("agent_id"),
+            "agent_slug": agent_slug,
             "agent_name": agent_name,
             "phone": clean_phone,
             "to_number": clean_phone,
@@ -98,6 +102,8 @@ class OutboundDialer:
             "campaign_id": campaign_id,
             "external_record_id": external_record_id,
             "room_name": room_name,
+            "call_goal": call_goal,
+            "opening_message": opening_message,
             
             # Legacy Backward Compatibility Aliases
             "citizen_name": contact_name,
@@ -151,7 +157,7 @@ class OutboundDialer:
                 try:
                     # BRPOP (Blocking Pop) from Redis
                     # result is a tuple: (queue_name, data)
-                    result = self.redis_client.brpop(QUEUE_NAME, timeout=5)
+                    result = self.redis_client.brpop([QUEUE_NAME, FALLBACK_QUEUE], timeout=5)
                     if result:
                         payload = json.loads(result[1])
                         await self.make_outbound_call(lkapi, payload)

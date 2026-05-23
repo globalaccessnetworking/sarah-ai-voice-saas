@@ -3,10 +3,10 @@ import { db } from "@/db";
 import { dispatchRules, phoneNumbers, agents } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
 import crypto from "crypto";
+import redis from "@/lib/redis";
 
 export async function GET(request: NextRequest) {
     try {
-        // We want to return the joined data for the UI so they don't have to fetch it piecemeal
         const rulesWithRelations = await db.select({
             id: dispatchRules.id,
             name: dispatchRules.name,
@@ -37,8 +37,15 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: "Phone Number ID and Agent ID are required." }, { status: 400 });
         }
 
-        // Check if an existing rule already binds this DID to an agent. If so, overwrite it? Or deny. Let's just create.
-        // Or wait, deleting existing rule for same phone is probably safer since a phone goes to 1 agent.
+        // Fetch the phone number and agent
+        const [phone] = await db.select().from(phoneNumbers).where(eq(phoneNumbers.id, phoneNumberId));
+        const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+
+        if (!phone || !agent) {
+            return NextResponse.json({ error: "Invalid Phone Number or Agent ID." }, { status: 400 });
+        }
+
+        // Delete existing rule for same phone to ensure 1-to-1 mapping
         await db.delete(dispatchRules).where(eq(dispatchRules.phoneNumberId, phoneNumberId));
 
         const newId = `rule_${crypto.randomBytes(12).toString("hex")}`;
@@ -48,6 +55,15 @@ export async function POST(request: NextRequest) {
             phoneNumberId: phoneNumberId,
             agentId: agentId,
         }).returning();
+
+        // Sync to Redis for inbound routing worker
+        // The worker expects: dispatch_rule:{to_number} -> {agent_slug}
+        // Make sure to clean the phone number to match SIP formatting expectations
+        const cleanPhone = phone.number.replace(/\+/g, "").replace(/\s/g, "");
+        await redis.set(`dispatch_rule:${cleanPhone}`, agent.slug);
+        
+        // Also set with '+' for full flexibility
+        await redis.set(`dispatch_rule:${phone.number.replace(/\s/g, "")}`, agent.slug);
 
         return NextResponse.json(newRule, { status: 201 });
     } catch (error) {

@@ -33,7 +33,7 @@ export async function POST(request: Request) {
             agentId: body.agentId || null,
             concurrency: body.concurrency || 1,
             callDelaySeconds: body.callDelaySeconds || 0,
-            status: 'idle',
+            status: 'draft',
             stats: { total: body.numbers ? body.numbers.length : 0, completed: 0, failed: 0 }
         }).returning();
 

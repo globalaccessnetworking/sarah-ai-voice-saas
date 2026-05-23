@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { sipTrunks, agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { SipClient, RoomServiceClient } from "livekit-server-sdk";
+import { SipClient, RoomServiceClient, AgentDispatchClient } from "livekit-server-sdk";
 
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { phoneNumber, agentId, contactData } = body;
+        const { phoneNumber, agentId, trunkId, openingMessage, callGoal, contactData } = body;
 
         if (!phoneNumber || !agentId) {
             return NextResponse.json({ error: "Phone number and agent ID are required." }, { status: 400 });
@@ -20,11 +20,12 @@ export async function POST(request: NextRequest) {
         }
 
         // 2. Fetch an Outbound SIP Trunk
-        // Logic: Try to find a trunk explicitly marked as 'outbound', otherwise take any trunk
-        let trunk = (await db.select().from(sipTrunks).where(eq(sipTrunks.type, "outbound")).limit(1))[0];
-
-        if (!trunk) {
-            trunk = (await db.select().from(sipTrunks).limit(1))[0];
+        let trunk;
+        if (trunkId) {
+            trunk = (await db.select().from(sipTrunks).where(eq(sipTrunks.id, trunkId)).limit(1))[0];
+        } else {
+            trunk = (await db.select().from(sipTrunks).where(eq(sipTrunks.type, "outbound")).limit(1))[0];
+            if (!trunk) trunk = (await db.select().from(sipTrunks).limit(1))[0];
         }
 
         if (!trunk) {
@@ -42,18 +43,34 @@ export async function POST(request: NextRequest) {
 
         const sipClient = new SipClient(host, apiKey, apiSecret);
         const roomClient = new RoomServiceClient(host, apiKey, apiSecret);
+        const agentDispatchClient = AgentDispatchClient ? new AgentDispatchClient(host, apiKey, apiSecret) : null;
 
         // 4. Create a unique Room Name for this call
-        // Format: call_[agentId]_[uuid]
-        const roomName = `call_${agentId}_${Math.random().toString(36).substring(2, 9)}`;
+        const cleanPhone = phoneNumber.replace(/\+/g, "").replace(/\s/g, "");
+        const externalRecordId = `test_${Math.floor(Date.now() / 1000)}`;
+        const roomName = `outbound_${cleanPhone}_${externalRecordId}`;
 
-        // 5. Create the Room with metadata for the Python worker
-        const roomMetadata = JSON.stringify({
-            agentId: agentId,
-            contactData: contactData || {},
+        // 5. Build full generic metadata payload
+        const metadataObj = {
+            type: "outbound_manual_test",
             direction: "outbound",
-            timestamp: new Date().toISOString()
-        });
+            call_direction: "outbound",
+            agent_id: agentId,
+            agent_slug: agent.slug,
+            agent_name: "outbound-agent",
+            phone: cleanPhone,
+            to_number: cleanPhone,
+            contact_name: contactData?.Name || "Test User",
+            lead_name: contactData?.Name || "Test User",
+            campaign_id: "manual_test",
+            external_record_id: externalRecordId,
+            room_name: roomName,
+            call_goal: callGoal || "Test outbound AI call",
+            opening_message: openingMessage || undefined,
+            config: {} // Any additional config overrides
+        };
+
+        const roomMetadata = JSON.stringify(metadataObj);
 
         await roomClient.createRoom({
             name: roomName,
@@ -68,10 +85,18 @@ export async function POST(request: NextRequest) {
             phoneNumber,
             roomName,
             {
-                participantIdentity: `sip_${phoneNumber.replace(/\+/g, "")}`,
-                participantName: contactData?.Name || phoneNumber,
+                participantIdentity: `sip_${cleanPhone}`,
+                participantName: metadataObj.contact_name,
+                participantMetadata: roomMetadata
             }
         );
+
+        // 7. Explicit Agent Dispatch
+        if (agentDispatchClient) {
+            await agentDispatchClient.createDispatch(roomName, "outbound-agent", { metadata: roomMetadata });
+        } else {
+            console.warn("AgentDispatchClient not available in this SDK version. Waiting for inbound SIP to trigger rule.");
+        }
 
         return NextResponse.json({
             success: true,

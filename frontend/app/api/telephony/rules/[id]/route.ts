@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { dispatchRules } from "@/db/schema";
+import { dispatchRules, phoneNumbers } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import redis from "@/lib/redis";
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
     try {
@@ -10,6 +11,14 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
         if (deletedRule.length === 0) {
             return NextResponse.json({ error: "Dispatch rule not found." }, { status: 404 });
+        }
+
+        // Fetch the phone number to clear its Redis routing
+        const [phone] = await db.select().from(phoneNumbers).where(eq(phoneNumbers.id, deletedRule[0].phoneNumberId));
+        if (phone) {
+            const cleanPhone = phone.number.replace(/\+/g, "").replace(/\s/g, "");
+            await redis.del(`dispatch_rule:${cleanPhone}`);
+            await redis.del(`dispatch_rule:${phone.number.replace(/\s/g, "")}`);
         }
 
         return NextResponse.json({ message: "Dispatch rule deleted successfully" }, { status: 200 });
