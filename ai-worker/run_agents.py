@@ -5180,13 +5180,17 @@ The opening message has already been delivered to the user automatically by the 
                 if is_outbound:
                     delay_sec = float(os.getenv("OUTBOUND_GREETING_DELAY_SEC", "2.5"))
                     logger.info(f"[OUTBOUND] Waiting {delay_sec}s for SIP answer/media before greeting")
+                    ts_delay_start = time.time()
                     await asyncio.sleep(delay_sec)
+                    ts_delay_end = time.time()
+                    logger.info(f"[LATENCY] greeting_delay_ms={int((ts_delay_end - ts_delay_start) * 1000)}")
                     
                     if not list(ctx.room.remote_participants.values()):
                         logger.warning("[OUTBOUND] SIP participant disconnected before greeting; skipping initial greeting.")
                     else:
                         # Outbound deterministic greeting must always use session.say() to guarantee it is spoken exactly
                         try:
+                            setattr(session, "_ts_greeting_say", time.time())
                             session.say(fast_greeting)
                         except RuntimeError as e:
                             if "AgentSession is closing" in str(e):
@@ -5470,6 +5474,16 @@ The opening message has already been delivered to the user automatically by the 
                 state = getattr(event, 'new_state', None) or getattr(event, 'state', None) or str(event)
                 logger.debug(f"Agent state changed: {state}")
                 if state == "speaking" or "speaking" in str(state).lower():
+                    ts_now = time.time()
+                    if hasattr(session, "_ts_greeting_say"):
+                        diff = int((ts_now - session._ts_greeting_say) * 1000)
+                        logger.info(f"[LATENCY] greeting_tts_to_first_audio_ms={diff}")
+                        delattr(session, "_ts_greeting_say")
+                    elif hasattr(session, "_ts_stt_final"):
+                        diff = int((ts_now - session._ts_stt_final) * 1000)
+                        logger.info(f"[LATENCY] total_response_ms={diff}")
+                        delattr(session, "_ts_stt_final")
+
                     if call_tracker:
                         call_tracker.on_agent_speech_started()
             except Exception as e:
@@ -5499,6 +5513,7 @@ The opening message has already been delivered to the user automatically by the 
                 is_final = getattr(event, 'is_final', False)
                 transcript = getattr(event, 'transcript', '')
                 if is_final and transcript:
+                    setattr(session, "_ts_stt_final", time.time())
                     logger.debug(f"Final transcript received: {transcript[:50]}...")
                     if call_tracker:
                         call_tracker.on_stt_transcript_received(is_final=True)
@@ -5532,6 +5547,26 @@ The opening message has already been delivered to the user automatically by the 
                             logger.debug(f"Dashboard User Sync Error: {dash_e}")
             except Exception as e:
                 logger.debug(f"Error handling user input transcribed: {e}")
+
+        @session.on("metrics_collected")
+        def on_metrics_collected(metrics):
+            """Log detailed component latencies from LiveKit metrics."""
+            try:
+                if hasattr(metrics, "llm_ttfb") and metrics.llm_ttfb:
+                    logger.info(f"[LATENCY] llm_duration_ms={int(metrics.llm_ttfb * 1000)}")
+                
+                if hasattr(metrics, "tts_ttfb") and metrics.tts_ttfb:
+                    logger.info(f"[LATENCY] tts_first_audio_ms={int(metrics.tts_ttfb * 1000)}")
+                
+                if hasattr(metrics, "ttfb") and hasattr(metrics, "llm_ttfb") and hasattr(metrics, "tts_ttfb"):
+                    # Approximate STT->LLM gap by subtracting LLM and TTS TTFB from Total TTFB
+                    if metrics.ttfb and metrics.llm_ttfb and metrics.tts_ttfb:
+                        stt_to_llm = metrics.ttfb - metrics.llm_ttfb - metrics.tts_ttfb
+                        if stt_to_llm > 0:
+                            logger.info(f"[LATENCY] stt_final_to_llm_start_ms={int(stt_to_llm * 1000)}")
+            except Exception as e:
+                logger.debug(f"Error handling metrics: {e}")
+
 
 
         @session.on("conversation_item_added")
