@@ -5182,12 +5182,27 @@ The opening message has already been delivered to the user automatically by the 
                     logger.info(f"[OUTBOUND] Waiting {delay_sec}s for SIP answer/media before greeting")
                     await asyncio.sleep(delay_sec)
                     
-                    # Outbound deterministic greeting must always use session.say() to guarantee it is spoken exactly
-                    session.say(fast_greeting)
+                    if not list(ctx.room.remote_participants.values()):
+                        logger.warning("[OUTBOUND] SIP participant disconnected before greeting; skipping initial greeting.")
+                    else:
+                        # Outbound deterministic greeting must always use session.say() to guarantee it is spoken exactly
+                        try:
+                            session.say(fast_greeting)
+                        except RuntimeError as e:
+                            if "AgentSession is closing" in str(e):
+                                logger.warning(f"[OUTBOUND] AgentSession is closing while greeting: {e}")
+                            else:
+                                raise
                 elif is_realtime:
                     session.generate_reply(instructions=f"Greet the user with exactly this message: {fast_greeting}")
                 else:
-                    session.say(fast_greeting)
+                    try:
+                        session.say(fast_greeting)
+                    except RuntimeError as e:
+                        if "AgentSession is closing" in str(e):
+                            logger.warning(f"[PBX] AgentSession is closing while greeting: {e}")
+                        else:
+                            raise
                     
                 logger.info(f"[PBX] Initial text-to-speech greeting triggered: '{fast_greeting[:30]}...'")
         
