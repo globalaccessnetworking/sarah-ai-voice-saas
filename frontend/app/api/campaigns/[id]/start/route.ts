@@ -1,9 +1,24 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@/db';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import redis from '@/lib/redis';
 
 const { campaigns, campaignNumbers, agents, sipTrunks } = schema;
+
+async function pushQueue(queueName: string, payload: unknown) {
+    const body = JSON.stringify(payload);
+    const r = redis as any;
+    if (typeof r.lPush === "function") return r.lPush(queueName, body);
+    if (typeof r.lpush === "function") return r.lpush(queueName, body);
+    if (typeof r.rPush === "function") return r.rPush(queueName, body);
+    if (typeof r.rpush === "function") return r.rpush(queueName, body);
+    throw new Error("Redis client does not support lPush/lpush/rPush/rpush");
+}
+
+function normalizePhone(phone: string) {
+    if (!phone) return "";
+    return phone.replace(/[\+\s\-\(\)]/g, '');
+}
 
 export async function POST(
     request: Request,
@@ -21,8 +36,16 @@ export async function POST(
             return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
         }
 
-        if (campaign.status !== 'draft' && campaign.status !== 'paused') {
-            return NextResponse.json({ error: "Campaign can only be started from draft or paused status." }, { status: 400 });
+        if (campaign.status !== 'draft' && campaign.status !== 'paused' && campaign.status !== 'stopped') {
+            return NextResponse.json({ error: "Campaign can only be started from draft, paused, or stopped status." }, { status: 400 });
+        }
+
+        if (campaign.campaignType === 'preview' || campaign.dialingMode === 'preview') {
+            return NextResponse.json({ error: "Preview campaigns are started from the Preview Dialer, not auto queue." }, { status: 400 });
+        }
+        
+        if (campaign.campaignType === 'vicidial') {
+            return NextResponse.json({ error: "ViciDial campaigns are managed externally." }, { status: 400 });
         }
 
         // 2. Fetch Agent
@@ -48,12 +71,7 @@ export async function POST(
             return NextResponse.json({ error: "Campaign is missing a valid SIP Trunk." }, { status: 400 });
         }
 
-        // 4. Update Status to Running
-        await db.update(campaigns)
-            .set({ status: 'running' })
-            .where(eq(campaigns.id, campaignId));
-
-        // 5. Fetch a small batch of pending numbers based on max_concurrency
+        // 4. Fetch a small batch of pending numbers based on max_concurrency
         const concurrency = campaign.concurrency || 1;
         const batchSize = Math.min(concurrency, 5); // Safe batch enqueue size for now
 
@@ -66,12 +84,19 @@ export async function POST(
             .limit(batchSize);
 
         if (numbersToCall.length === 0) {
-            return NextResponse.json({ success: true, message: "Campaign started, but no pending numbers left." }, { status: 200 });
+            // Even if there are no numbers, we might still want to mark it running, or we can just return.
+            // Let's mark it running so the frontend reflects the change, but report 0 enqueued.
+            await db.update(campaigns)
+                .set({ status: 'running' })
+                .where(eq(campaigns.id, campaignId));
+            return NextResponse.json({ success: true, message: "Campaign started, but no pending numbers left.", enqueued: 0 }, { status: 200 });
         }
 
-        // 6. Enqueue to Redis
+        // 5. Enqueue to Redis
         let enqueuedCount = 0;
         for (const number of numbersToCall) {
+            const sipCallTo = normalizePhone(number.phone);
+            
             const payload = {
                 type: "outbound_campaign_call",
                 direction: "outbound",
@@ -81,6 +106,7 @@ export async function POST(
                 external_record_id: number.id,
                 contact_name: number.name || "Customer",
                 phone: number.phone,
+                sip_call_to: sipCallTo,
                 agent_id: agent.id,
                 agent_slug: agent.slug,
                 agent_name: "outbound-agent",
@@ -91,10 +117,7 @@ export async function POST(
                 legacy_complaint_mode: false
             };
 
-            await redis.lPush('AI_DIALER_OUTBOUND_QUEUE', JSON.stringify(payload));
-            
-            // Fallback for legacy workers that haven't updated queue names yet
-            // await redis.lPush('sarah_robocall_queue', JSON.stringify(payload));
+            await pushQueue('AI_DIALER_OUTBOUND_QUEUE', payload);
             
             // Mark as processing
             await db.update(campaignNumbers)
@@ -103,6 +126,11 @@ export async function POST(
                 
             enqueuedCount++;
         }
+
+        // 6. Update Status to Running ONLY after successful enqueue
+        await db.update(campaigns)
+            .set({ status: 'running' })
+            .where(eq(campaigns.id, campaignId));
 
         return NextResponse.json({
             success: true,
@@ -115,3 +143,4 @@ export async function POST(
         return NextResponse.json({ error: "Failed to start campaign", details: error.message }, { status: 500 });
     }
 }
+

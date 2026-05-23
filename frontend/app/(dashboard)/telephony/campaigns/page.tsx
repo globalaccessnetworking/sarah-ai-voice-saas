@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Search, Plus, Play, Pause, Square, Trash2, Megaphone, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { Search, Plus, Play, Pause, Square, Trash2, Megaphone, CheckCircle2, AlertCircle } from "lucide-react";
 import Link from "next/link";
 
 interface Campaign {
     id: string;
     name: string;
     status: string;
+    campaignType: string;
     sipTrunkId: string;
     agentId: string;
     concurrency: number;
@@ -24,6 +25,7 @@ export default function CampaignsPage() {
     const [campaigns, setCampaigns] = useState<Campaign[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState("");
+    const [pageError, setPageError] = useState("");
 
     useEffect(() => {
         const fetchCampaigns = async () => {
@@ -44,6 +46,7 @@ export default function CampaignsPage() {
     }, []);
 
     const handleUpdateStatus = async (id: string, newStatus: string) => {
+        setPageError("");
         try {
             let endpoint = `/api/campaigns/${id}`;
             let method = "PUT";
@@ -74,24 +77,29 @@ export default function CampaignsPage() {
                 setCampaigns(campaigns.map(c => c.id === id ? { ...c, status: mappedStatus } : c));
             } else {
                 const err = await res.json();
-                alert(`Error: ${err.error || "Failed to update status"}`);
+                setPageError(`Failed to update campaign: ${err.error || err.details || "Unknown error"}`);
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error updating campaign status", error);
-            alert("Error updating campaign status");
+            setPageError(`Failed to update campaign: ${error.message || "Network error"}`);
         }
     };
 
     const handleDelete = async (id: string) => {
         if (!confirm("Are you sure you want to delete this campaign? All associated numbers will also be deleted.")) return;
+        setPageError("");
 
         try {
             const res = await fetch(`/api/campaigns/${id}`, { method: "DELETE" });
             if (res.ok) {
                 setCampaigns(campaigns.filter(c => c.id !== id));
+            } else {
+                const err = await res.json();
+                setPageError(`Failed to delete campaign: ${err.error || "Unknown error"}`);
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error deleting campaign", error);
+            setPageError(`Failed to delete campaign: ${error.message || "Network error"}`);
         }
     };
 
@@ -125,6 +133,13 @@ export default function CampaignsPage() {
                         Create Campaign
                     </Link>
                 </div>
+
+                {pageError && (
+                    <div className="p-4 bg-red-500/10 border border-red-500/50 rounded-lg flex items-center gap-3 text-red-400">
+                        <AlertCircle size={18} />
+                        <span className="text-sm font-medium">{pageError}</span>
+                    </div>
+                )}
 
                 {/* KPI Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -182,6 +197,7 @@ export default function CampaignsPage() {
                             <thead>
                                 <tr>
                                     <th>Campaign Name</th>
+                                    <th>Type</th>
                                     <th>Status</th>
                                     <th>Progress</th>
                                     <th>Concurrency</th>
@@ -192,19 +208,19 @@ export default function CampaignsPage() {
                             <tbody>
                                 {loading ? (
                                     <tr>
-                                        <td colSpan={6} className="text-center py-8 text-zinc-500">
+                                        <td colSpan={7} className="text-center py-8 text-zinc-500">
                                             Loading campaigns...
                                         </td>
                                     </tr>
                                 ) : filteredCampaigns.length === 0 ? (
                                     <tr>
-                                        <td colSpan={6} className="text-center py-8 text-zinc-500">
+                                        <td colSpan={7} className="text-center py-8 text-zinc-500">
                                             {searchTerm ? "No campaigns match your search." : "No outbound campaigns configured yet."}
                                         </td>
                                     </tr>
                                 ) : (
                                     filteredCampaigns.map((campaign) => {
-                                        const { total, completed, failed } = campaign.stats;
+                                        const { total, completed, failed } = campaign.stats || { total: 0, completed: 0, failed: 0 };
                                         const pending = total - (completed + failed);
 
                                         // Calculate percentages for stacked bar
@@ -212,6 +228,8 @@ export default function CampaignsPage() {
                                         const completedPct = (completed / totalValid) * 100;
                                         const failedPct = (failed / totalValid) * 100;
                                         const pendingPct = (pending / totalValid) * 100;
+                                        
+                                        const isPreview = campaign.campaignType === 'preview' || campaign.campaignType === 'vicidial';
 
                                         return (
                                             <tr key={campaign.id}>
@@ -219,10 +237,15 @@ export default function CampaignsPage() {
                                                     {campaign.name}
                                                 </td>
                                                 <td>
+                                                    <span className="text-xs font-medium uppercase tracking-wider text-zinc-400 bg-zinc-900 px-2 py-1 rounded">
+                                                        {campaign.campaignType || 'progressive'}
+                                                    </span>
+                                                </td>
+                                                <td>
                                                     <span className={`badge ${campaign.status === "running" ? "badge-success" :
                                                             campaign.status === "paused" ? "badge-warning" :
                                                                 campaign.status === "completed" ? "badge-info" :
-                                                                    campaign.status === "cancelled" ? "badge-danger" :
+                                                                    campaign.status === "cancelled" || campaign.status === "stopped" ? "badge-danger" :
                                                                         "badge-neutral"
                                                         }`}>
                                                         {campaign.status.toUpperCase()}
@@ -253,12 +276,22 @@ export default function CampaignsPage() {
                                                                 <Megaphone size={16} />
                                                             </Link>
                                                             
-                                                            {campaign.status === "idle" || campaign.status === "draft" ? (
-                                                                <button onClick={() => handleUpdateStatus(campaign.id, "running")} className="p-2 text-zinc-400 hover:text-green-400 hover:bg-zinc-800 rounded-md transition-colors" title="Start Campaign">
+                                                            {(campaign.status === "idle" || campaign.status === "draft" || campaign.status === "stopped") ? (
+                                                                <button 
+                                                                    onClick={() => handleUpdateStatus(campaign.id, "running")} 
+                                                                    className={`p-2 rounded-md transition-colors ${isPreview ? "text-zinc-600 cursor-not-allowed" : "text-zinc-400 hover:text-green-400 hover:bg-zinc-800"}`} 
+                                                                    title={isPreview ? "Manual/ViciDial campaigns cannot be auto-started" : "Start Campaign"}
+                                                                    disabled={isPreview}
+                                                                >
                                                                     <Play size={16} />
                                                                 </button>
                                                             ) : campaign.status === "paused" ? (
-                                                                <button onClick={() => handleUpdateStatus(campaign.id, "resume")} className="p-2 text-zinc-400 hover:text-green-400 hover:bg-zinc-800 rounded-md transition-colors" title="Resume Campaign">
+                                                                <button 
+                                                                    onClick={() => handleUpdateStatus(campaign.id, "resume")} 
+                                                                    className={`p-2 rounded-md transition-colors ${isPreview ? "text-zinc-600 cursor-not-allowed" : "text-zinc-400 hover:text-green-400 hover:bg-zinc-800"}`} 
+                                                                    title={isPreview ? "Manual/ViciDial campaigns cannot be auto-started" : "Resume Campaign"}
+                                                                    disabled={isPreview}
+                                                                >
                                                                     <Play size={16} />
                                                                 </button>
                                                             ) : campaign.status === "running" ? (
