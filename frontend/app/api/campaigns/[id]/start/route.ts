@@ -84,7 +84,7 @@ export async function POST(
 
         // 5. Enqueue to Redis
         let enqueuedCount = 0;
-        const queueName = 'AI_DIALER_OUTBOUND_QUEUE';
+        const queueName = process.env.AI_DIALER_OUTBOUND_QUEUE || 'ai_dialer_outbound_queue';
         
         for (const number of numbersToCall) {
             const sipCallTo = normalizePhone(number.phone);

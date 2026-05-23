@@ -28,6 +28,8 @@ export async function enqueueRedisJob(queueName: string, payload: unknown): Prom
         const c = await getClient();
         const json = JSON.stringify(payload);
         await c.lPush(queueName, json);
+        const len = await c.lLen(queueName);
+        console.log("[Queue] Enqueued", { queueName, length: len });
     } catch (error) {
         console.error(`[Queue] Failed to enqueue job to ${queueName}:`, error);
         throw error; // Let the route handle the error and keep transaction safety

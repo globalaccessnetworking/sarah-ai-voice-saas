@@ -24,7 +24,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
 QUEUE_NAME = os.getenv("AI_DIALER_OUTBOUND_QUEUE", "ai_dialer_outbound_queue")
-FALLBACK_QUEUE = "sarah_robocall_queue"
+FALLBACK_QUEUE = os.getenv("SARAH_ROBOCALL_QUEUE", "sarah_robocall_queue")
 
 # DB Config
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -66,26 +66,32 @@ class OutboundDialer:
 
     async def make_outbound_call(self, lkapi, payload):
         import time
-        external_record_id = payload.get("external_record_id") or payload.get("lead_id") or payload.get("ticket_id") or f"CALL-{int(time.time())}"
-        phone = payload.get("phone") or payload.get("to_number")
+        legacy_mode = payload.get("legacy_complaint_mode", False)
+        
+        external_record_id = payload.get("external_record_id") or payload.get("lead_id") or (payload.get("ticket_id") if legacy_mode else None) or f"CALL-{int(time.time())}"
+        
+        phone = payload.get("phone") or (payload.get("to_number") if legacy_mode else None)
         if not phone:
             logger.error("No phone number provided in payload")
             return
             
-        contact_name = payload.get("contact_name") or payload.get("lead_name") or payload.get("citizen_name") or "Valued Customer"
-        call_goal = payload.get("call_goal") or payload.get("issue_type") or "General Inquiry"
+        sip_call_to = payload.get("sip_call_to")
+        if not sip_call_to:
+            sip_call_to = phone.replace("+", "").replace(" ", "").replace("-", "").strip()
+            
+        contact_name = payload.get("contact_name") or payload.get("lead_name") or (payload.get("citizen_name") if legacy_mode else None) or "Valued Customer"
+        call_goal = payload.get("call_goal") or (payload.get("issue_type") if legacy_mode else None) or "General Inquiry"
         campaign_id = payload.get("campaign_id") or "default_campaign"
         agent_name = payload.get("agent_name") or "outbound-agent"
         agent_slug = payload.get("agent_slug")
-        trunk_id = payload.get("sip_trunk_id") or payload.get("trunk_id") or SIP_TRUNK_ID
+        trunk_id = payload.get("sip_trunk_id") or (payload.get("trunk_id") if legacy_mode else None) or SIP_TRUNK_ID
         agent_config = payload.get("config", {})
         opening_message = payload.get("opening_message")
 
-        clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "").strip()
         timestamp_val = int(time.time())
-        room_name = f"outbound_{clean_phone}_{external_record_id}_{timestamp_val}"
+        room_name = f"outbound_{sip_call_to}_{external_record_id}_{timestamp_val}"
         
-        logger.info(f"Dispatching SIP call to {clean_phone} for Campaign {campaign_id} (Record {external_record_id})...")
+        logger.info(f"Dispatching SIP call to {sip_call_to} for Campaign {campaign_id} (Record {external_record_id})...")
 
         # Prepare Metadata Tunnel (Generic SaaS Format)
         metadata_obj = {
@@ -105,22 +111,23 @@ class OutboundDialer:
             "call_goal": call_goal,
             "opening_message": opening_message,
             
-            # Legacy Backward Compatibility Aliases
-            "citizen_name": contact_name,
-            "issue_type": call_goal,
-            "ticket_id": external_record_id,
-            
             "config": agent_config
         }
+        
+        if legacy_mode:
+            metadata_obj["citizen_name"] = contact_name
+            metadata_obj["issue_type"] = call_goal
+            metadata_obj["ticket_id"] = external_record_id
+            
         metadata = json.dumps(metadata_obj, ensure_ascii=False)
 
         try:
             # Step 1: Create SIP Participant
             request = api.CreateSIPParticipantRequest(
                 sip_trunk_id=trunk_id,
-                sip_call_to=clean_phone,
+                sip_call_to=sip_call_to,
                 room_name=room_name,
-                participant_identity=f"sip_{clean_phone}_{timestamp_val}",
+                participant_identity=f"sip_{sip_call_to}_{timestamp_val}",
                 participant_name=contact_name,
                 participant_metadata=metadata
             )
@@ -159,7 +166,11 @@ class OutboundDialer:
                     # result is a tuple: (queue_name, data)
                     result = self.redis_client.brpop([QUEUE_NAME, FALLBACK_QUEUE], timeout=5)
                     if result:
+                        q_name = result[0]
                         payload = json.loads(result[1])
+                        logger.info(f"[Dialer] Received job from queue={q_name}")
+                        logger.info(f"[Dialer] Payload keys={list(payload.keys())}")
+                        logger.info(f"[Dialer] Calling sip_call_to={payload.get('sip_call_to')} phone={payload.get('phone')} campaign_id={payload.get('campaign_id')}")
                         await self.make_outbound_call(lkapi, payload)
                 except Exception as e:
                     logger.error(f"Dialer Loop Error: {e}")
