@@ -8,6 +8,11 @@ logger = logging.getLogger("ai_worker.services.campaign_service")
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+if DATABASE_URL:
+    logger.info(f"[CampaignLifecycle] DATABASE_URL present=True")
+else:
+    logger.warning(f"[CampaignLifecycle] DATABASE_URL present=False")
+
 def get_db_connection():
     if not DATABASE_URL:
         return None
@@ -28,7 +33,9 @@ def _update_campaign_stats(campaign_id: str, conn):
                 SELECT 
                     COUNT(*) as total,
                     SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending
                 FROM campaign_numbers
                 WHERE campaign_id = %s
                 """,
@@ -38,16 +45,20 @@ def _update_campaign_stats(campaign_id: str, conn):
             if not result:
                 return
             
-            total, completed, failed = result
+            total, completed, failed, processing, pending = result
             total = int(total or 0)
             completed = int(completed or 0)
             failed = int(failed or 0)
+            processing = int(processing or 0)
+            pending = int(pending or 0)
             
             # Reconstruct JSONB stats
             stats_json = json.dumps({
                 "total": total,
                 "completed": completed,
-                "failed": failed
+                "failed": failed,
+                "processing": processing,
+                "pending": pending
             })
 
             # Check if all leads are done
@@ -97,6 +108,8 @@ def mark_campaign_call_completed(campaign_id: str, lead_id: str, duration: int =
                 """,
                 (datetime.utcnow(), lead_id, campaign_id)
             )
+            if cur.rowcount == 0:
+                logger.warning(f"[CampaignLifecycle] no campaign_numbers row updated for {lead_id}")
         # Update campaign stats
         _update_campaign_stats(campaign_id, conn)
         conn.commit()
@@ -124,6 +137,8 @@ def mark_campaign_call_failed(campaign_id: str, lead_id: str, reason: str = ""):
                 """,
                 (datetime.utcnow(), lead_id, campaign_id)
             )
+            if cur.rowcount == 0:
+                logger.warning(f"[CampaignLifecycle] no campaign_numbers row updated for {lead_id}")
         # Update campaign stats
         _update_campaign_stats(campaign_id, conn)
         conn.commit()

@@ -953,26 +953,6 @@ class CallTracker:
             except Exception:
                 pass
                 
-            # --- Campaign Tracking ---
-            if campaign_service and self.job_metadata:
-                campaign_id = self.job_metadata.get("campaign_id")
-                lead_id = self.job_metadata.get("lead_id")
-                if campaign_id and lead_id:
-                    # Determine if it's a success or failure
-                    if end_reason in ["hangup", "completed", "agent_hangup"]:
-                        campaign_service.mark_campaign_call_completed(
-                            campaign_id=campaign_id,
-                            lead_id=lead_id,
-                            duration=call_duration,
-                            transcript_count=len(self.transcription_segments)
-                        )
-                    else:
-                        campaign_service.mark_campaign_call_failed(
-                            campaign_id=campaign_id,
-                            lead_id=lead_id,
-                            reason=end_reason
-                        )
-
         except Exception as e:
             logger.error(f"Failed to end call tracking: {e}")
 
@@ -5213,7 +5193,8 @@ The opening message has already been delivered to the user automatically by the 
                         use_fast_tts = os.getenv("OUTBOUND_USE_PREGENERATED_GREETING", "false").lower() == "true"
                         
                         if use_fast_tts and "agent_tts" in locals() and agent_tts:
-                            logger.info(f"[OUTBOUND] Using fast direct TTS for greeting: '{fast_greeting[:30]}...'")
+                            logger.info(f"[GREETING] OUTBOUND_USE_PREGENERATED_GREETING=true")
+                            logger.info(f"[GREETING] source=direct_pcm_attempt")
                             async def play_fast_tts_greeting():
                                 try:
                                     source = rtc.AudioSource(16000, 1)
@@ -5224,6 +5205,7 @@ The opening message has already been delivered to the user automatically by the 
                                     def on_speech_started(*args):
                                         nonlocal interrupted
                                         interrupted = True
+                                        logger.info("[BARGE_IN] user speech detected while agent speaking; interrupting agent audio")
                                     session.on("user_speech_started", on_speech_started)
                                     
                                     ts_greeting_start = time.time()
@@ -5234,21 +5216,27 @@ The opening message has already been delivered to the user automatically by the 
                                         frame = audio_event.frame
                                         if frame:
                                             if first_frame:
-                                                logger.info(f"[LATENCY] greeting_tts_to_first_audio_ms={int((time.time() - ts_greeting_start) * 1000)}")
+                                                first_audio_ms = int((time.time() - ts_greeting_start) * 1000)
+                                                logger.info(f"[LATENCY] greeting_tts_to_first_audio_ms={first_audio_ms}")
+                                                logger.info(f"[GREETING] source=direct_pcm")
+                                                logger.info(f"[GREETING] first_audio_ms={first_audio_ms}")
                                                 first_frame = False
                                             await source.capture_frame(frame)
                                             
                                     await ctx.room.local_participant.unpublish_track(publication.sid)
                                 except Exception as e:
-                                    logger.error(f"[PBX] Fast TTS Greeting Error: {e}")
+                                    logger.error(f"[PBX] Fast TTS Greeting Error: {e}", exc_info=True)
                                     try:
-                                        session.say(fast_greeting)
-                                    except Exception:
-                                        pass
+                                        logger.info("[GREETING] source=session_say_fallback")
+                                        setattr(session, "_ts_greeting_say", time.time())
+                                        session.say(fast_greeting, allow_interruptions=True)
+                                    except Exception as fallback_e:
+                                        logger.error(f"[PBX] session.say fallback failed: {fallback_e}")
                             asyncio.create_task(play_fast_tts_greeting())
                         else:
                             # Outbound deterministic greeting must always use session.say() to guarantee it is spoken exactly
                             try:
+                                logger.info("[GREETING] source=session_say_fallback")
                                 setattr(session, "_ts_greeting_say", time.time())
                                 session.say(fast_greeting, allow_interruptions=True)
                             except RuntimeError as e:
@@ -5349,6 +5337,15 @@ The opening message has already been delivered to the user automatically by the 
             We use this to 'ignite' the TTS session in the background
             so it's ready before the LLM even finishes generating.
             """
+            # Barge-in tracking
+            try:
+                agent_state = getattr(session, 'state', None) or getattr(session, 'agent_state', None)
+                state_str = str(agent_state).lower() if agent_state else ""
+                if "speaking" in state_str:
+                    logger.info("[BARGE_IN] user speech detected while agent speaking; interrupting agent audio")
+            except Exception as e:
+                logger.debug(f"Error checking barge-in state: {e}")
+
             agent_tts = agent_params.get("tts")
             if agent_tts and "upliftai" in str(type(agent_tts)).lower():
                 # Launch async 'touch' synthesis to open the socket early.
@@ -6039,6 +6036,58 @@ The opening message has already been delivered to the user automatically by the 
         try:
             event_listener.stop()
             unregister_call_session(ctx.room.name, caller_phone)
+            
+            # --- Campaign Tracking Lifecycle Hook ---
+            try:
+                # Extract from all possible sources
+                c_id = None
+                l_id = None
+                ext_id = None
+                phone = caller_phone
+                sip_call = None
+                
+                # Check call_tracker metadata
+                if call_tracker and call_tracker.job_metadata:
+                    c_id = c_id or call_tracker.job_metadata.get("campaign_id")
+                    l_id = l_id or call_tracker.job_metadata.get("lead_id")
+                    ext_id = ext_id or call_tracker.job_metadata.get("external_record_id")
+                    sip_call = sip_call or call_tracker.job_metadata.get("sip_call_to")
+                
+                # Check sip_metadata / job_metadata
+                if not c_id and "job_metadata" in locals() and job_metadata:
+                    c_id = c_id or job_metadata.get("campaign_id")
+                    l_id = l_id or job_metadata.get("lead_id")
+                    ext_id = ext_id or job_metadata.get("external_record_id")
+                    sip_call = sip_call or job_metadata.get("sip_call_to")
+                
+                # Check room metadata
+                if not c_id and ctx.room.metadata:
+                    try:
+                        rmeta = json.loads(ctx.room.metadata)
+                        c_id = c_id or rmeta.get("campaign_id")
+                        l_id = l_id or rmeta.get("lead_id")
+                    except Exception:
+                        pass
+                
+                logger.info(f"[CampaignLifecycle] cleanup reached is_outbound={is_outbound_call} campaign_id={c_id} lead_id={l_id} external_record_id={ext_id} end_reason={end_reason}")
+                
+                if c_id and l_id:
+                    if campaign_service:
+                        dur = time.time() - call_tracker.call_start_time if call_tracker and call_tracker.call_start_time else 0
+                        tc = len(call_tracker.transcription_segments) if call_tracker else 0
+                        if end_reason in ["hangup", "completed", "agent_hangup"]:
+                            campaign_service.mark_campaign_call_completed(c_id, l_id, dur, tc)
+                            logger.info(f"[CampaignLifecycle] successfully marked call completed for {c_id}/{l_id}")
+                        else:
+                            campaign_service.mark_campaign_call_failed(c_id, l_id, end_reason)
+                            logger.info(f"[CampaignLifecycle] successfully marked call failed for {c_id}/{l_id}")
+                    else:
+                        logger.warning("[CampaignLifecycle] campaign_service is not loaded")
+                else:
+                    logger.warning("[CampaignLifecycle] missing campaign_id/lead_id; skipping campaign update")
+            except Exception as cl_error:
+                logger.exception(f"[CampaignLifecycle] failed to update campaign lifecycle: {cl_error}")
+
             if call_tracker:
                 call_tracker.end_call(end_reason=end_reason, recording_id=locals().get('auto_record_egress_id'))
                 
