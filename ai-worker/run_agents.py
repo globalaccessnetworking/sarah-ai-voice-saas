@@ -5284,6 +5284,7 @@ The opening message has already been delivered to the user automatically by the 
                     
                     if not list(ctx.room.remote_participants.values()):
                         logger.warning("[OUTBOUND] SIP participant disconnected before greeting; skipping initial greeting.")
+                        setattr(session, "_disconnected_before_greeting", True)
                     else:
                         raw_env_fast = os.getenv("OUTBOUND_USE_PREGENERATED_GREETING", "false")
                         use_fast_tts = raw_env_fast.strip().lower() in ["true", "1", "yes", "on"]
@@ -5372,7 +5373,9 @@ The opening message has already been delivered to the user automatically by the 
                         else:
                             raise
                     
-                logger.info(f"[PBX] Initial text-to-speech greeting triggered: '{fast_greeting[:30]}...'")
+                if not getattr(session, "_disconnected_before_greeting", False):
+                    logger.info(f"[PBX] Initial text-to-speech greeting triggered: '{fast_greeting[:30]}...'")
+                    setattr(session, "_greeting_triggered", True)
         
         # PREEMPTIVE WARMUP for Realtime (Gemini Live)
         # REMOVED: Causing potential interference and clipping. 
@@ -6217,12 +6220,25 @@ The opening message has already been delivered to the user automatically by the 
                     if campaign_service:
                         dur = time.time() - call_tracker.call_start_time if call_tracker and call_tracker.call_start_time else 0
                         tc = len(call_tracker.transcription_segments) if call_tracker else 0
-                        if end_reason in ["hangup", "completed", "agent_hangup"]:
+                        
+                        agent_speech_count = getattr(session, "_agent_speech_count", 0) if "session" in locals() and session else 0
+                        has_user_transcript = tc > 0
+                        disconnected_before_greeting = "session" in locals() and session and getattr(session, "_disconnected_before_greeting", False)
+                        
+                        greeting_triggered = "session" in locals() and session and getattr(session, "_greeting_triggered", False)
+                        
+                        if disconnected_before_greeting:
+                            logger.info("[CampaignLifecycle] outcome disconnected_before_greeting; marking failed")
+                            campaign_service.mark_campaign_call_failed(c_id, l_id, "disconnected_before_greeting")
+                        elif not has_user_transcript and agent_speech_count == 0 and not greeting_triggered:
+                            logger.info("[CampaignLifecycle] outcome no_user_audio_or_agent_audio; marking failed")
+                            campaign_service.mark_campaign_call_failed(c_id, l_id, "no_answer")
+                        elif end_reason in ["hangup", "completed", "agent_hangup"] and (has_user_transcript or greeting_triggered):
                             campaign_service.mark_campaign_call_completed(c_id, l_id, dur, tc)
                             logger.info(f"[CampaignLifecycle] successfully marked call completed for {c_id}/{l_id}")
                         else:
                             campaign_service.mark_campaign_call_failed(c_id, l_id, end_reason)
-                            logger.info(f"[CampaignLifecycle] successfully marked call failed for {c_id}/{l_id}")
+                            logger.info(f"[CampaignLifecycle] successfully marked call failed for {c_id}/{l_id} reason={end_reason}")
                     else:
                         logger.warning("[CampaignLifecycle] campaign_service is not loaded")
                 else:
