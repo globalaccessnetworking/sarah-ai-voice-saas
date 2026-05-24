@@ -5107,6 +5107,50 @@ The opening message has already been delivered to the user automatically by the 
         # TELEPHONY OPTIMIZATION: Instant Greeting (Recording or Text-to-Speech)
         greeting_audio_url = tools_settings.get("greeting_audio_url")
         
+        # --- NEW GREETING RESOLUTION PRECEDENCE ---
+        is_outbound_call_context = is_outbound_call or sip_metadata.get("direction") == "outbound" or ctx.room.name.startswith("outbound_")
+        
+        resolved_greeting = None
+        resolved_source = None
+        
+        if is_outbound_call_context:
+            jm = {}
+            if "job_metadata" in locals() and job_metadata:
+                jm = job_metadata
+            elif call_tracker and call_tracker.job_metadata:
+                jm = call_tracker.job_metadata
+
+            jm_config = jm.get("config", {}) if isinstance(jm.get("config"), dict) else {}
+
+            for src, val in [
+                ("job_metadata.opening_message", jm.get("opening_message")),
+                ("job_metadata.openingMessage", jm.get("openingMessage")),
+                ("job_metadata.outboundGreetingText", jm.get("outboundGreetingText")),
+                ("job_metadata.config.opening_message", jm_config.get("opening_message")),
+                ("job_metadata.config.openingMessage", jm_config.get("openingMessage")),
+                ("job_metadata.config.outboundGreetingText", jm_config.get("outboundGreetingText")),
+                ("agent_config.initial_greeting", initial_greeting),
+            ]:
+                if val and isinstance(val, str) and val.strip():
+                    resolved_greeting = val.strip()
+                    resolved_source = src
+                    break
+        
+        if resolved_greeting:
+            # Replace variables
+            c_name = caller_data.get("contact_name") or caller_data.get("lead_name") or caller_data.get("caller_name") or "there"
+            c_company = caller_data.get("company") or caller_data.get("business_name") or ""
+            resolved_greeting = resolved_greeting.replace("{{name}}", c_name).replace("{name}", c_name).replace("{{contact_name}}", c_name).replace("{{lead_name}}", c_name)
+            if c_company:
+                resolved_greeting = resolved_greeting.replace("{{company}}", c_company).replace("{{business_name}}", c_company)
+            else:
+                resolved_greeting = resolved_greeting.replace("{{company}}", "").replace("{{business_name}}", "")
+            initial_greeting = resolved_greeting
+            
+            trunc_text = initial_greeting[:160] + "..." if len(initial_greeting) > 160 else initial_greeting
+            logger.info(f"[GREETING] resolved_source={resolved_source}")
+            logger.info(f"[GREETING] resolved_text={trunc_text}")
+
         if is_telephony_agent and (initial_greeting or greeting_audio_url):
             # Extract basic SIP metadata for greeting variables ({{user_number}})
             temp_from = ""
@@ -5194,7 +5238,7 @@ The opening message has already been delivered to the user automatically by the 
                         
                         if use_fast_tts and "agent_tts" in locals() and agent_tts:
                             logger.info(f"[GREETING] OUTBOUND_USE_PREGENERATED_GREETING=true")
-                            logger.info(f"[GREETING] source=direct_pcm_attempt")
+                            logger.info(f"[GREETING] direct_pcm_attempt=true")
                             async def play_fast_tts_greeting():
                                 try:
                                     source = rtc.AudioSource(16000, 1)
@@ -5212,13 +5256,16 @@ The opening message has already been delivered to the user automatically by the 
                                     first_frame = True
                                     
                                     async for audio_event in agent_tts.synthesize(fast_greeting):
-                                        if interrupted: break
+                                        if interrupted:
+                                            logger.info("[BARGE_IN] stopped direct PCM greeting playback")
+                                            break
                                         frame = audio_event.frame
                                         if frame:
                                             if first_frame:
                                                 first_audio_ms = int((time.time() - ts_greeting_start) * 1000)
                                                 logger.info(f"[LATENCY] greeting_tts_to_first_audio_ms={first_audio_ms}")
                                                 logger.info(f"[GREETING] source=direct_pcm")
+                                                logger.info(f"[GREETING] audio_ready_ms={first_audio_ms}")
                                                 logger.info(f"[GREETING] first_audio_ms={first_audio_ms}")
                                                 first_frame = False
                                             await source.capture_frame(frame)
@@ -5228,7 +5275,7 @@ The opening message has already been delivered to the user automatically by the 
                                     logger.error(f"[PBX] Fast TTS Greeting Error: {e}", exc_info=True)
                                     try:
                                         logger.info(f"[GREETING] direct_pcm_unavailable reason={str(e)}")
-                                        logger.info("[GREETING] source=session_say_fallback")
+                                        logger.info(f"[GREETING] source=session_say_fallback reason={str(e)}")
                                         setattr(session, "_ts_greeting_say", time.time())
                                         session.say(fast_greeting, allow_interruptions=True)
                                     except Exception as fallback_e:
@@ -5237,7 +5284,7 @@ The opening message has already been delivered to the user automatically by the 
                         else:
                             # Outbound deterministic greeting must always use session.say() to guarantee it is spoken exactly
                             try:
-                                logger.info("[GREETING] source=session_say_fallback")
+                                logger.info("[GREETING] source=session_say_fallback reason=fast_tts_disabled")
                                 setattr(session, "_ts_greeting_say", time.time())
                                 session.say(fast_greeting, allow_interruptions=True)
                             except RuntimeError as e:
