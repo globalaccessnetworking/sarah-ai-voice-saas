@@ -5227,6 +5227,7 @@ The opening message has already been delivered to the user automatically by the 
                                 except Exception as e:
                                     logger.error(f"[PBX] Fast TTS Greeting Error: {e}", exc_info=True)
                                     try:
+                                        logger.info(f"[GREETING] direct_pcm_unavailable reason={str(e)}")
                                         logger.info("[GREETING] source=session_say_fallback")
                                         setattr(session, "_ts_greeting_say", time.time())
                                         session.say(fast_greeting, allow_interruptions=True)
@@ -5339,10 +5340,10 @@ The opening message has already been delivered to the user automatically by the 
             """
             # Barge-in tracking
             try:
-                agent_state = getattr(session, 'state', None) or getattr(session, 'agent_state', None)
-                state_str = str(agent_state).lower() if agent_state else ""
-                if "speaking" in state_str:
+                is_speaking = getattr(session, "_agent_speaking", False)
+                if is_speaking:
                     logger.info("[BARGE_IN] user speech detected while agent speaking; interrupting agent audio")
+                    logger.info("[BARGE_IN] interrupt requested but no supported interrupt handle found")
             except Exception as e:
                 logger.debug(f"Error checking barge-in state: {e}")
 
@@ -5530,6 +5531,7 @@ The opening message has already been delivered to the user automatically by the 
                 state = getattr(event, 'new_state', None) or getattr(event, 'state', None) or str(event)
                 logger.debug(f"Agent state changed: {state}")
                 if state == "speaking" or "speaking" in str(state).lower():
+                    setattr(session, "_agent_speaking", True)
                     ts_now = time.time()
                     if hasattr(session, "_ts_greeting_say"):
                         diff = int((ts_now - session._ts_greeting_say) * 1000)
@@ -5542,6 +5544,8 @@ The opening message has already been delivered to the user automatically by the 
 
                     if call_tracker:
                         call_tracker.on_agent_speech_started()
+                else:
+                    setattr(session, "_agent_speaking", False)
             except Exception as e:
                 logger.debug(f"Error handling agent state change: {e}")
 
@@ -6049,15 +6053,15 @@ The opening message has already been delivered to the user automatically by the 
                 # Check call_tracker metadata
                 if call_tracker and call_tracker.job_metadata:
                     c_id = c_id or call_tracker.job_metadata.get("campaign_id")
-                    l_id = l_id or call_tracker.job_metadata.get("lead_id")
-                    ext_id = ext_id or call_tracker.job_metadata.get("external_record_id")
+                    l_id = l_id or call_tracker.job_metadata.get("lead_id") or call_tracker.job_metadata.get("leadId") or call_tracker.job_metadata.get("campaign_number_id") or call_tracker.job_metadata.get("campaignNumberId")
+                    ext_id = ext_id or call_tracker.job_metadata.get("external_record_id") or call_tracker.job_metadata.get("externalRecordId") or call_tracker.job_metadata.get("record_id") or call_tracker.job_metadata.get("recordId")
                     sip_call = sip_call or call_tracker.job_metadata.get("sip_call_to")
                 
                 # Check sip_metadata / job_metadata
                 if not c_id and "job_metadata" in locals() and job_metadata:
                     c_id = c_id or job_metadata.get("campaign_id")
-                    l_id = l_id or job_metadata.get("lead_id")
-                    ext_id = ext_id or job_metadata.get("external_record_id")
+                    l_id = l_id or job_metadata.get("lead_id") or job_metadata.get("leadId") or job_metadata.get("campaign_number_id") or job_metadata.get("campaignNumberId")
+                    ext_id = ext_id or job_metadata.get("external_record_id") or job_metadata.get("externalRecordId") or job_metadata.get("record_id") or job_metadata.get("recordId")
                     sip_call = sip_call or job_metadata.get("sip_call_to")
                 
                 # Check room metadata
@@ -6065,11 +6069,16 @@ The opening message has already been delivered to the user automatically by the 
                     try:
                         rmeta = json.loads(ctx.room.metadata)
                         c_id = c_id or rmeta.get("campaign_id")
-                        l_id = l_id or rmeta.get("lead_id")
+                        l_id = l_id or rmeta.get("lead_id") or rmeta.get("leadId") or rmeta.get("campaign_number_id") or rmeta.get("campaignNumberId")
+                        ext_id = ext_id or rmeta.get("external_record_id") or rmeta.get("externalRecordId") or rmeta.get("record_id") or rmeta.get("recordId")
                     except Exception:
                         pass
                 
                 logger.info(f"[CampaignLifecycle] cleanup reached is_outbound={is_outbound_call} campaign_id={c_id} lead_id={l_id} external_record_id={ext_id} end_reason={end_reason}")
+                
+                if c_id and not l_id and ext_id:
+                    l_id = ext_id
+                    logger.info(f"[CampaignLifecycle] using external_record_id as lead_id fallback: {l_id}")
                 
                 if c_id and l_id:
                     if campaign_service:
