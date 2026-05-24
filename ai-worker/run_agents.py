@@ -5055,6 +5055,10 @@ The opening message has already been delivered to the user automatically by the 
                     logger.warning("≡ƒÜ¿ SYNC_EMPTY: LLM returned empty translation.")
                     return
 
+                if getattr(session, "_call_ending", False):
+                    logger.info("[CALL_END] suppressing datachannel broadcast after disconnect")
+                    return
+                
                 # 4. DataChannel Broadcast Pivot (V23.34)
                 # This bypasses the WebRTC race condition with Deepgram STT
                 payload = json.dumps({
@@ -5286,9 +5290,23 @@ The opening message has already been delivered to the user automatically by the 
                         logger.info(f"[GREETING] env OUTBOUND_USE_PREGENERATED_GREETING={raw_env_fast} parsed={use_fast_tts}")
                         
                         if use_fast_tts:
-                            if not ("agent_tts" in locals() and agent_tts):
-                                logger.info("[GREETING] direct_pcm_unavailable reason=agent_tts_missing")
-                                logger.info("[GREETING] source=session_say_fallback reason=agent_tts_missing")
+                            greeting_tts = None
+                            tts_provider = agent_config.get('tts_config', {}).get('provider', 'N/A')
+                            tts_model = agent_config.get('tts_config', {}).get('model', 'N/A')
+                            tts_voice = agent_config.get('tts_config', {}).get('voice_id', 'N/A')
+                            
+                            try:
+                                greeting_tts = get_tts(agent_config)
+                                if greeting_tts:
+                                    logger.info(f"[GREETING] greeting_tts_ready provider={tts_provider} model={tts_model}")
+                                else:
+                                    raise ValueError("get_tts returned None")
+                            except Exception as e:
+                                logger.error(f"[GREETING] greeting_tts_init_failed provider={tts_provider} model={tts_model} reason={str(e)}")
+
+                            if not greeting_tts:
+                                logger.info("[GREETING] direct_pcm_unavailable reason=greeting_tts_missing")
+                                logger.info("[GREETING] source=session_say_fallback reason=greeting_tts_missing")
                                 setattr(session, "_ts_greeting_say", time.time())
                                 session.say(fast_greeting, allow_interruptions=True)
                             else:
@@ -5298,9 +5316,6 @@ The opening message has already been delivered to the user automatically by the 
                                         # CACHE FALLBACK LOGIC
                                         cache_dir = Path("/tmp/ai_greetings")
                                         cache_dir.mkdir(parents=True, exist_ok=True)
-                                        tts_provider = agent_config.get('tts_config', {}).get('provider', 'N/A')
-                                        tts_model = agent_config.get('tts_config', {}).get('model', 'N/A')
-                                        tts_voice = agent_config.get('tts_config', {}).get('voice_id', 'N/A')
                                         hash_str = f"{fast_greeting}_{tts_provider}_{tts_model}_{tts_voice}"
                                         cache_key = hashlib.sha256(hash_str.encode()).hexdigest()[:16]
                                         cache_file = cache_dir / f"{cache_key}.wav"
@@ -5310,7 +5325,7 @@ The opening message has already been delivered to the user automatically by the 
                                         if not cache_file.exists():
                                             logger.info("[GREETING] cache_hit=false; synthesizing...")
                                             raw_pcm = bytearray()
-                                            async for audio_event in agent_tts.synthesize(fast_greeting):
+                                            async for audio_event in greeting_tts.synthesize(fast_greeting):
                                                 if audio_event.frame:
                                                     raw_pcm.extend(audio_event.frame.data)
                                             
@@ -5444,7 +5459,26 @@ The opening message has already been delivered to the user automatically by the 
                 is_speaking = getattr(session, "_agent_speaking", False)
                 if is_speaking:
                     logger.info("[BARGE_IN] user speech detected while agent speaking; interrupting agent audio")
-                    logger.info("[BARGE_IN] interrupt requested but no supported interrupt handle found")
+                    interrupted = False
+                    
+                    if hasattr(session, "cancel_response"):
+                        try:
+                            session.cancel_response()
+                            interrupted = True
+                            logger.info("[BARGE_IN] interrupt_success method=cancel_response")
+                        except Exception as e:
+                            logger.debug(f"[BARGE_IN] cancel_response failed: {e}")
+                            
+                    if not interrupted and hasattr(session, "interrupt"):
+                        try:
+                            session.interrupt()
+                            interrupted = True
+                            logger.info("[BARGE_IN] interrupt_success method=interrupt")
+                        except Exception as e:
+                            logger.debug(f"[BARGE_IN] interrupt failed: {e}")
+                            
+                    if not interrupted:
+                        logger.info("[BARGE_IN] interrupt requested but no supported interrupt handle found")
             except Exception as e:
                 logger.debug(f"Error checking barge-in state: {e}")
 
@@ -5630,6 +5664,7 @@ The opening message has already been delivered to the user automatically by the 
                 logger.debug(f"Agent state changed: {state}")
                 if state == "speaking" or "speaking" in str(state).lower():
                     setattr(session, "_agent_speaking", True)
+                    logger.info(f"[BARGE_IN] agent_speaking=true state={state}")
                     ts_now = time.time()
                     if hasattr(session, "_ts_greeting_say"):
                         diff = int((ts_now - session._ts_greeting_say) * 1000)
@@ -5644,6 +5679,7 @@ The opening message has already been delivered to the user automatically by the 
                         call_tracker.on_agent_speech_started()
                 else:
                     setattr(session, "_agent_speaking", False)
+                    logger.info(f"[BARGE_IN] agent_speaking=false state={state}")
             except Exception as e:
                 logger.debug(f"Error handling agent state change: {e}")
 
