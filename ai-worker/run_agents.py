@@ -5214,12 +5214,14 @@ The opening message has already been delivered to the user automatically by the 
                         
                         # Binary-perfect PCM reading from pre-formatted WAV
                         with wave.open(io.BytesIO(wav_bytes), 'rb') as wav:
-                            # Verify if wave header matches WebRTC expectation (Optional warning)
-                            if wav.getframerate() != 16000 or wav.getnchannels() != 1:
-                                logger.warning(f"[PBX] Unaligned WAV detected: {wav.getframerate()}Hz {wav.getnchannels()}ch")
+                            sample_rate = wav.getframerate()
+                            num_channels = wav.getnchannels()
+                            sampwidth = wav.getsampwidth()
+                            if sample_rate != 16000 or num_channels != 1:
+                                logger.warning(f"[PBX] Unaligned WAV detected: {sample_rate}Hz {num_channels}ch")
                             raw_pcm = wav.readframes(wav.getnframes())
 
-                        source = rtc.AudioSource(16000, 1)
+                        source = rtc.AudioSource(sample_rate, num_channels)
                         track = rtc.LocalAudioTrack.create_audio_track("greeting", source)
                         publication = await ctx.room.local_participant.publish_track(track)
                         
@@ -5230,8 +5232,13 @@ The opening message has already been delivered to the user automatically by the 
                             logger.info("[BARGE_IN] stopped greeting playback")
                         session.on("user_speech_started", on_speech_started)
                         
-                        # V23.11: Mathematically Bulletproof 100ms extraction loop (OS-Safe Pacing)
-                        chunk_size = 3200
+                        # 20ms chunks (LiveKit Safe)
+                        chunk_samples = sample_rate // 50
+                        bytes_per_sample = sampwidth * num_channels
+                        chunk_size = chunk_samples * bytes_per_sample
+                        
+                        logger.info(f"[GREETING] playback_sample_rate={sample_rate} playback_channels={num_channels} chunk_ms=20")
+                        
                         start_time = asyncio.get_event_loop().time()
                         first_frame = True
 
@@ -5242,16 +5249,16 @@ The opening message has already been delivered to the user automatically by the 
                                 chunk = chunk.ljust(chunk_size, b'\x00')
                             
                             if first_frame:
-                                first_audio_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+                                ts_now = time.time()
+                                answer_to_first_audio_ms = int((ts_now - ts_delay_end) * 1000) if "ts_delay_end" in locals() else 0
                                 logger.info(f"[GREETING] source=cached_audio")
-                                logger.info(f"[GREETING] first_audio_ms={first_audio_ms}")
+                                logger.info(f"[GREETING] answer_to_first_audio_ms={answer_to_first_audio_ms}")
                                 first_frame = False
                                 
-                            # CRITICAL: len(chunk) // 2 for samples_per_channel (16-bit mono)
-                            await source.capture_frame(rtc.AudioFrame(chunk, 16000, 1, len(chunk) // 2))
+                            await source.capture_frame(rtc.AudioFrame(chunk, sample_rate, num_channels, chunk_samples))
                             
                             # Mathematical pacing with drift correction
-                            expected_time = start_time + (i + chunk_size) / (16000 * 2)
+                            expected_time = start_time + ((i + chunk_size) / bytes_per_sample) / sample_rate
                             sleep_duration = expected_time - asyncio.get_event_loop().time()
                             if sleep_duration > 0:
                                 await asyncio.sleep(sleep_duration)
@@ -5286,9 +5293,9 @@ The opening message has already been delivered to the user automatically by the 
                         logger.warning("[OUTBOUND] SIP participant disconnected before greeting; skipping initial greeting.")
                         setattr(session, "_disconnected_before_greeting", True)
                     else:
-                        raw_env_fast = os.getenv("OUTBOUND_USE_PREGENERATED_GREETING", "false")
-                        use_fast_tts = raw_env_fast.strip().lower() in ["true", "1", "yes", "on"]
-                        logger.info(f"[GREETING] env OUTBOUND_USE_PREGENERATED_GREETING={raw_env_fast} parsed={use_fast_tts}")
+                        greeting_mode = os.getenv("OUTBOUND_GREETING_MODE", "session_say").strip().lower()
+                        use_fast_tts = greeting_mode == "cached_pcm"
+                        logger.info(f"[GREETING] env OUTBOUND_GREETING_MODE={greeting_mode} parsed_cached_pcm={use_fast_tts}")
                         
                         if use_fast_tts:
                             greeting_tts = None
@@ -5324,22 +5331,42 @@ The opening message has already been delivered to the user automatically by the 
                                         logger.info(f"[GREETING] cache_key={cache_key}")
                                         
                                         if not cache_file.exists():
-                                            logger.info("[GREETING] cache_hit=false; synthesizing...")
-                                            raw_pcm = bytearray()
-                                            async for audio_event in greeting_tts.synthesize(fast_greeting):
-                                                if audio_event.frame:
-                                                    raw_pcm.extend(audio_event.frame.data)
+                                            logger.info("[GREETING] cache_hit=false; synthesizing in background, playing fallback immediately...")
+                                            logger.info("[GREETING] source=session_say_fallback reason=cache_miss")
+                                            setattr(session, "_ts_greeting_say", time.time())
+                                            session.say(fast_greeting, allow_interruptions=True)
                                             
-                                            with wave.open(str(cache_file), 'wb') as wav:
-                                                wav.setnchannels(1)
-                                                wav.setsampwidth(2)
-                                                wav.setframerate(16000)
-                                                wav.writeframes(raw_pcm)
+                                            async def build_cache():
+                                                try:
+                                                    ts_cache_start = time.time()
+                                                    raw_pcm = bytearray()
+                                                    sample_rate = 16000
+                                                    num_channels = 1
+                                                    async for audio_event in greeting_tts.synthesize(fast_greeting):
+                                                        if audio_event.frame:
+                                                            sample_rate = audio_event.frame.sample_rate
+                                                            num_channels = audio_event.frame.num_channels
+                                                            raw_pcm.extend(audio_event.frame.data)
+                                                    
+                                                    duration_ms = int((len(raw_pcm) / (sample_rate * num_channels * 2)) * 1000)
+                                                    logger.info(f"[GREETING] cached_wav sample_rate={sample_rate} channels={num_channels} sample_width=2 duration_ms={duration_ms}")
+                                                    
+                                                    with wave.open(str(cache_file), 'wb') as wav:
+                                                        wav.setnchannels(num_channels)
+                                                        wav.setsampwidth(2)
+                                                        wav.setframerate(sample_rate)
+                                                        wav.writeframes(raw_pcm)
+                                                    
+                                                    cache_synthesis_ms = int((time.time() - ts_cache_start) * 1000)
+                                                    logger.info(f"[GREETING] cache_synthesis_ms={cache_synthesis_ms}")
+                                                except Exception as be:
+                                                    logger.debug(f"Background cache build failed: {be}")
+                                            
+                                            asyncio.create_task(build_cache())
                                         else:
                                             logger.info("[GREETING] cache_hit=true")
-                                            
-                                        # Play from cache using mathematical pacing
-                                        await play_wav_greeting(session, str(cache_file), fast_greeting)
+                                            # Play from cache using mathematical pacing
+                                            await play_wav_greeting(session, str(cache_file), fast_greeting)
                                         
                                     except Exception as e:
                                         logger.error(f"[PBX] Fast TTS Greeting Error: {e}", exc_info=True)
