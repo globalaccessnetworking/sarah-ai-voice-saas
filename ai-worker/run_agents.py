@@ -60,9 +60,11 @@ except ImportError as e:
 # Import call history service
 try:
     from app.services import call_history
+    from app.services import campaign_service
 except ImportError as e:
     print(f"Warning: Call history service not available: {e}")
     call_history = None
+    campaign_service = None
 
 # Import call summary service for auto-generation
 try:
@@ -950,6 +952,26 @@ class CallTracker:
                 self._push_report_event("post_call")
             except Exception:
                 pass
+                
+            # --- Campaign Tracking ---
+            if campaign_service and self.job_metadata:
+                campaign_id = self.job_metadata.get("campaign_id")
+                lead_id = self.job_metadata.get("lead_id")
+                if campaign_id and lead_id:
+                    # Determine if it's a success or failure
+                    if end_reason in ["hangup", "completed", "agent_hangup"]:
+                        campaign_service.mark_campaign_call_completed(
+                            campaign_id=campaign_id,
+                            lead_id=lead_id,
+                            duration=call_duration,
+                            transcript_count=len(self.transcription_segments)
+                        )
+                    else:
+                        campaign_service.mark_campaign_call_failed(
+                            campaign_id=campaign_id,
+                            lead_id=lead_id,
+                            reason=end_reason
+                        )
 
         except Exception as e:
             logger.error(f"Failed to end call tracking: {e}")
@@ -5188,15 +5210,52 @@ The opening message has already been delivered to the user automatically by the 
                     if not list(ctx.room.remote_participants.values()):
                         logger.warning("[OUTBOUND] SIP participant disconnected before greeting; skipping initial greeting.")
                     else:
-                        # Outbound deterministic greeting must always use session.say() to guarantee it is spoken exactly
-                        try:
-                            setattr(session, "_ts_greeting_say", time.time())
-                            session.say(fast_greeting)
-                        except RuntimeError as e:
-                            if "AgentSession is closing" in str(e):
-                                logger.warning(f"[OUTBOUND] AgentSession is closing while greeting: {e}")
-                            else:
-                                raise
+                        use_fast_tts = os.getenv("OUTBOUND_USE_PREGENERATED_GREETING", "false").lower() == "true"
+                        
+                        if use_fast_tts and "agent_tts" in locals() and agent_tts:
+                            logger.info(f"[OUTBOUND] Using fast direct TTS for greeting: '{fast_greeting[:30]}...'")
+                            async def play_fast_tts_greeting():
+                                try:
+                                    source = rtc.AudioSource(16000, 1)
+                                    track = rtc.LocalAudioTrack.create_audio_track("greeting", source)
+                                    publication = await ctx.room.local_participant.publish_track(track)
+                                    
+                                    interrupted = False
+                                    def on_speech_started(*args):
+                                        nonlocal interrupted
+                                        interrupted = True
+                                    session.on("user_speech_started", on_speech_started)
+                                    
+                                    ts_greeting_start = time.time()
+                                    first_frame = True
+                                    
+                                    async for audio_event in agent_tts.synthesize(fast_greeting):
+                                        if interrupted: break
+                                        frame = audio_event.frame
+                                        if frame:
+                                            if first_frame:
+                                                logger.info(f"[LATENCY] greeting_tts_to_first_audio_ms={int((time.time() - ts_greeting_start) * 1000)}")
+                                                first_frame = False
+                                            await source.capture_frame(frame)
+                                            
+                                    await ctx.room.local_participant.unpublish_track(publication.sid)
+                                except Exception as e:
+                                    logger.error(f"[PBX] Fast TTS Greeting Error: {e}")
+                                    try:
+                                        session.say(fast_greeting)
+                                    except Exception:
+                                        pass
+                            asyncio.create_task(play_fast_tts_greeting())
+                        else:
+                            # Outbound deterministic greeting must always use session.say() to guarantee it is spoken exactly
+                            try:
+                                setattr(session, "_ts_greeting_say", time.time())
+                                session.say(fast_greeting, allow_interruptions=True)
+                            except RuntimeError as e:
+                                if "AgentSession is closing" in str(e):
+                                    logger.warning(f"[OUTBOUND] AgentSession is closing while greeting: {e}")
+                                else:
+                                    raise
                 elif is_realtime:
                     session.generate_reply(instructions=f"Greet the user with exactly this message: {fast_greeting}")
                 else:

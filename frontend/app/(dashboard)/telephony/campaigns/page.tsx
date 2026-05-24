@@ -28,12 +28,20 @@ export default function CampaignsPage() {
     const [pageError, setPageError] = useState("");
 
     useEffect(() => {
+        let timeoutId: NodeJS.Timeout;
+
         const fetchCampaigns = async () => {
             try {
                 const res = await fetch("/api/campaigns");
                 if (res.ok) {
                     const data = await res.json();
                     setCampaigns(data);
+                    
+                    // Check if any campaign is running
+                    const hasRunning = data.some((c: Campaign) => c.status === "running");
+                    if (hasRunning) {
+                        timeoutId = setTimeout(fetchCampaigns, 5000);
+                    }
                 }
             } catch (error) {
                 console.error("Error fetching campaigns:", error);
@@ -43,6 +51,10 @@ export default function CampaignsPage() {
         };
 
         fetchCampaigns();
+
+        return () => {
+            if (timeoutId) clearTimeout(timeoutId);
+        };
     }, []);
 
     const handleUpdateStatus = async (id: string, newStatus: string) => {
