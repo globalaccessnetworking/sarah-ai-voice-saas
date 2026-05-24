@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 import uuid
 from dotenv import load_dotenv
+import hashlib
 import aiohttp
 import wave
 import io
@@ -5003,6 +5004,9 @@ The opening message has already been delivered to the user automatically by the 
         # We register these hooks BEFORE session.start() to avoid race conditions.
         
         async def handle_translation(text: str, participant: rtc.Participant, source_type: str):
+            if getattr(session, "_call_ending", False):
+                logger.info("[CALL_END] suppressing agent speech after disconnect")
+                return
             if not text or not session: 
                 return
             
@@ -5104,6 +5108,8 @@ The opening message has already been delivered to the user automatically by the 
         def on_p_disconnected(participant):
             if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP or str(participant.identity).startswith("sip_"):
                 logger.info(f"≡ƒÅé≡ƒÅ╗ SYNC: SIP Participant {participant.identity} disconnected. Finalizing.")
+                setattr(session, "_call_ending", True)
+                logger.info("[CALL_END] SIP participant disconnected; cancelling active speech")
                 try:
                     from app.services.call_history import complete_call_record
                     complete_call_record(ctx.room.name, {"status": "completed", "reason": "Participant left", "duration": 0})
@@ -5187,15 +5193,20 @@ The opening message has already been delivered to the user automatically by the 
                     temp_from = a.get("sip.phoneNumber", "")
                     if temp_from: break
             
-            if greeting_audio_url:
+            if True:
                 async def play_wav_greeting(session, url, fallback_text):
                     try:
                         # --- Pure-PCM Extraction for Absolute WebRTC Alignment ---
-                        http_sess = await get_http_session()
-                        async with http_sess.get(url, timeout=5) as resp:
-                            if resp.status != 200:
-                                raise Exception(f"HTTP_{resp.status}")
-                            wav_bytes = await resp.read()
+                        wav_bytes = None
+                        if url.startswith("http://") or url.startswith("https://"):
+                            http_sess = await get_http_session()
+                            async with http_sess.get(url, timeout=5) as resp:
+                                if resp.status != 200:
+                                    raise Exception(f"HTTP_{resp.status}")
+                                wav_bytes = await resp.read()
+                        else:
+                            with open(url, "rb") as f:
+                                wav_bytes = f.read()
                         
                         # Binary-perfect PCM reading from pre-formatted WAV
                         with wave.open(io.BytesIO(wav_bytes), 'rb') as wav:
@@ -5212,11 +5223,13 @@ The opening message has already been delivered to the user automatically by the 
                         def on_speech_started(*args):
                             nonlocal interrupted
                             interrupted = True
+                            logger.info("[BARGE_IN] stopped greeting playback")
                         session.on("user_speech_started", on_speech_started)
                         
                         # V23.11: Mathematically Bulletproof 100ms extraction loop (OS-Safe Pacing)
                         chunk_size = 3200
                         start_time = asyncio.get_event_loop().time()
+                        first_frame = True
 
                         for i in range(0, len(raw_pcm), chunk_size):
                             if interrupted: break
@@ -5224,6 +5237,12 @@ The opening message has already been delivered to the user automatically by the 
                             if len(chunk) < chunk_size:
                                 chunk = chunk.ljust(chunk_size, b'\x00')
                             
+                            if first_frame:
+                                first_audio_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+                                logger.info(f"[GREETING] source=cached_audio")
+                                logger.info(f"[GREETING] first_audio_ms={first_audio_ms}")
+                                first_frame = False
+                                
                             # CRITICAL: len(chunk) // 2 for samples_per_channel (16-bit mono)
                             await source.capture_frame(rtc.AudioFrame(chunk, 16000, 1, len(chunk) // 2))
                             
@@ -5241,6 +5260,7 @@ The opening message has already been delivered to the user automatically by the 
                         if fallback_text:
                             session.say(fallback_text, allow_interruptions=True)
 
+            if greeting_audio_url:
                 asyncio.create_task(play_wav_greeting(session, greeting_audio_url, initial_greeting))
                 
             elif initial_greeting:
@@ -5261,53 +5281,60 @@ The opening message has already been delivered to the user automatically by the 
                     if not list(ctx.room.remote_participants.values()):
                         logger.warning("[OUTBOUND] SIP participant disconnected before greeting; skipping initial greeting.")
                     else:
-                        use_fast_tts = os.getenv("OUTBOUND_USE_PREGENERATED_GREETING", "false").lower() == "true"
+                        raw_env_fast = os.getenv("OUTBOUND_USE_PREGENERATED_GREETING", "false")
+                        use_fast_tts = raw_env_fast.strip().lower() in ["true", "1", "yes", "on"]
+                        logger.info(f"[GREETING] env OUTBOUND_USE_PREGENERATED_GREETING={raw_env_fast} parsed={use_fast_tts}")
                         
-                        if use_fast_tts and "agent_tts" in locals() and agent_tts:
-                            logger.info(f"[GREETING] OUTBOUND_USE_PREGENERATED_GREETING=true")
-                            logger.info(f"[GREETING] direct_pcm_attempt=true")
-                            async def play_fast_tts_greeting():
-                                try:
-                                    source = rtc.AudioSource(16000, 1)
-                                    track = rtc.LocalAudioTrack.create_audio_track("greeting", source)
-                                    publication = await ctx.room.local_participant.publish_track(track)
-                                    
-                                    interrupted = False
-                                    def on_speech_started(*args):
-                                        nonlocal interrupted
-                                        interrupted = True
-                                        logger.info("[BARGE_IN] user speech detected while agent speaking; interrupting agent audio")
-                                    session.on("user_speech_started", on_speech_started)
-                                    
-                                    ts_greeting_start = time.time()
-                                    first_frame = True
-                                    
-                                    async for audio_event in agent_tts.synthesize(fast_greeting):
-                                        if interrupted:
-                                            logger.info("[BARGE_IN] stopped direct PCM greeting playback")
-                                            break
-                                        frame = audio_event.frame
-                                        if frame:
-                                            if first_frame:
-                                                first_audio_ms = int((time.time() - ts_greeting_start) * 1000)
-                                                logger.info(f"[LATENCY] greeting_tts_to_first_audio_ms={first_audio_ms}")
-                                                logger.info(f"[GREETING] source=direct_pcm")
-                                                logger.info(f"[GREETING] audio_ready_ms={first_audio_ms}")
-                                                logger.info(f"[GREETING] first_audio_ms={first_audio_ms}")
-                                                first_frame = False
-                                            await source.capture_frame(frame)
-                                            
-                                    await ctx.room.local_participant.unpublish_track(publication.sid)
-                                except Exception as e:
-                                    logger.error(f"[PBX] Fast TTS Greeting Error: {e}", exc_info=True)
+                        if use_fast_tts:
+                            if not ("agent_tts" in locals() and agent_tts):
+                                logger.info("[GREETING] direct_pcm_unavailable reason=agent_tts_missing")
+                                logger.info("[GREETING] source=session_say_fallback reason=agent_tts_missing")
+                                setattr(session, "_ts_greeting_say", time.time())
+                                session.say(fast_greeting, allow_interruptions=True)
+                            else:
+                                logger.info(f"[GREETING] direct_pcm_attempt=true")
+                                async def play_fast_tts_greeting():
                                     try:
-                                        logger.info(f"[GREETING] direct_pcm_unavailable reason={str(e)}")
-                                        logger.info(f"[GREETING] source=session_say_fallback reason={str(e)}")
-                                        setattr(session, "_ts_greeting_say", time.time())
-                                        session.say(fast_greeting, allow_interruptions=True)
-                                    except Exception as fallback_e:
-                                        logger.error(f"[PBX] session.say fallback failed: {fallback_e}")
-                            asyncio.create_task(play_fast_tts_greeting())
+                                        # CACHE FALLBACK LOGIC
+                                        cache_dir = Path("/tmp/ai_greetings")
+                                        cache_dir.mkdir(parents=True, exist_ok=True)
+                                        tts_provider = agent_config.get('tts_config', {}).get('provider', 'N/A')
+                                        tts_model = agent_config.get('tts_config', {}).get('model', 'N/A')
+                                        tts_voice = agent_config.get('tts_config', {}).get('voice_id', 'N/A')
+                                        hash_str = f"{fast_greeting}_{tts_provider}_{tts_model}_{tts_voice}"
+                                        cache_key = hashlib.sha256(hash_str.encode()).hexdigest()[:16]
+                                        cache_file = cache_dir / f"{cache_key}.wav"
+                                        
+                                        logger.info(f"[GREETING] cache_key={cache_key}")
+                                        
+                                        if not cache_file.exists():
+                                            logger.info("[GREETING] cache_hit=false; synthesizing...")
+                                            raw_pcm = bytearray()
+                                            async for audio_event in agent_tts.synthesize(fast_greeting):
+                                                if audio_event.frame:
+                                                    raw_pcm.extend(audio_event.frame.data)
+                                            
+                                            with wave.open(str(cache_file), 'wb') as wav:
+                                                wav.setnchannels(1)
+                                                wav.setsampwidth(2)
+                                                wav.setframerate(16000)
+                                                wav.writeframes(raw_pcm)
+                                        else:
+                                            logger.info("[GREETING] cache_hit=true")
+                                            
+                                        # Play from cache using mathematical pacing
+                                        await play_wav_greeting(session, str(cache_file), fast_greeting)
+                                        
+                                    except Exception as e:
+                                        logger.error(f"[PBX] Fast TTS Greeting Error: {e}", exc_info=True)
+                                        try:
+                                            logger.info(f"[GREETING] direct_pcm_unavailable reason={str(e)}")
+                                            logger.info(f"[GREETING] source=session_say_fallback reason={str(e)}")
+                                            setattr(session, "_ts_greeting_say", time.time())
+                                            session.say(fast_greeting, allow_interruptions=True)
+                                        except Exception as fallback_e:
+                                            logger.error(f"[PBX] session.say fallback failed: {fallback_e}")
+                                asyncio.create_task(play_fast_tts_greeting())
                         else:
                             # Outbound deterministic greeting must always use session.say() to guarantee it is spoken exactly
                             try:
