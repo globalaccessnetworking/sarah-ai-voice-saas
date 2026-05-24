@@ -237,6 +237,32 @@ async def get_http_session() -> aiohttp.ClientSession:
         _shared_http_session = aiohttp.ClientSession()
     return _shared_http_session
 
+def normalize_dict(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+def render_template(text, data):
+    if not text or not isinstance(text, str):
+        return text
+    c_name = data.get("contact_name") or data.get("lead_name") or data.get("caller_name") or "there"
+    c_company = data.get("company") or data.get("business_name") or ""
+    text = text.replace("{{name}}", c_name).replace("{name}", c_name).replace("{{contact_name}}", c_name).replace("{{lead_name}}", c_name)
+    if c_company:
+        text = text.replace("{{company}}", c_company).replace("{{business_name}}", c_company)
+    else:
+        text = text.replace("{{company}}", "").replace("{{business_name}}", "")
+    return text
+
 # Import LiveKit components
 try:
     from livekit import agents, rtc
@@ -5114,42 +5140,43 @@ The opening message has already been delivered to the user automatically by the 
         resolved_source = None
         
         if is_outbound_call_context:
-            jm = {}
-            if "job_metadata" in locals() and job_metadata:
-                jm = job_metadata
-            elif call_tracker and call_tracker.job_metadata:
-                jm = call_tracker.job_metadata
+            try:
+                jm = {}
+                if "job_metadata" in locals() and job_metadata:
+                    jm = normalize_dict(job_metadata)
+                elif call_tracker and call_tracker.job_metadata:
+                    jm = normalize_dict(call_tracker.job_metadata)
+    
+                jm_config = normalize_dict(jm.get("config", {}))
+                
+                logger.info(f"[GREETING] metadata_type job_metadata={type(jm).__name__} normalized_keys={list(jm.keys())}")
+    
+                for src, val in [
+                    ("job_metadata.opening_message", jm.get("opening_message")),
+                    ("job_metadata.openingMessage", jm.get("openingMessage")),
+                    ("job_metadata.outboundGreetingText", jm.get("outboundGreetingText")),
+                    ("job_metadata.config.opening_message", jm_config.get("opening_message")),
+                    ("job_metadata.config.openingMessage", jm_config.get("openingMessage")),
+                    ("job_metadata.config.outboundGreetingText", jm_config.get("outboundGreetingText")),
+                    ("agent_config.initial_greeting", initial_greeting),
+                ]:
+                    if val and isinstance(val, str) and val.strip():
+                        resolved_greeting = val.strip()
+                        resolved_source = src
+                        break
+                        
+                if resolved_greeting:
+                    # Replace variables safely
+                    initial_greeting = render_template(resolved_greeting, caller_data)
+                    trunc_text = initial_greeting[:160] + "..." if len(initial_greeting) > 160 else initial_greeting
+                    logger.info(f"[GREETING] resolved_source={resolved_source}")
+                    logger.info(f"[GREETING] resolved_text={trunc_text}")
+            except Exception as e:
+                logger.exception("[GREETING] failed to resolve greeting; using fallback")
+                resolved_greeting = None
 
-            jm_config = jm.get("config", {}) if isinstance(jm.get("config"), dict) else {}
-
-            for src, val in [
-                ("job_metadata.opening_message", jm.get("opening_message")),
-                ("job_metadata.openingMessage", jm.get("openingMessage")),
-                ("job_metadata.outboundGreetingText", jm.get("outboundGreetingText")),
-                ("job_metadata.config.opening_message", jm_config.get("opening_message")),
-                ("job_metadata.config.openingMessage", jm_config.get("openingMessage")),
-                ("job_metadata.config.outboundGreetingText", jm_config.get("outboundGreetingText")),
-                ("agent_config.initial_greeting", initial_greeting),
-            ]:
-                if val and isinstance(val, str) and val.strip():
-                    resolved_greeting = val.strip()
-                    resolved_source = src
-                    break
-        
-        if resolved_greeting:
-            # Replace variables
-            c_name = caller_data.get("contact_name") or caller_data.get("lead_name") or caller_data.get("caller_name") or "there"
-            c_company = caller_data.get("company") or caller_data.get("business_name") or ""
-            resolved_greeting = resolved_greeting.replace("{{name}}", c_name).replace("{name}", c_name).replace("{{contact_name}}", c_name).replace("{{lead_name}}", c_name)
-            if c_company:
-                resolved_greeting = resolved_greeting.replace("{{company}}", c_company).replace("{{business_name}}", c_company)
-            else:
-                resolved_greeting = resolved_greeting.replace("{{company}}", "").replace("{{business_name}}", "")
-            initial_greeting = resolved_greeting
-            
-            trunc_text = initial_greeting[:160] + "..." if len(initial_greeting) > 160 else initial_greeting
-            logger.info(f"[GREETING] resolved_source={resolved_source}")
-            logger.info(f"[GREETING] resolved_text={trunc_text}")
+        if not resolved_greeting and is_outbound_call_context:
+            initial_greeting = agent_config.get("initial_greeting") or "Hello, this is your AI assistant."
 
         if is_telephony_agent and (initial_greeting or greeting_audio_url):
             # Extract basic SIP metadata for greeting variables ({{user_number}})
@@ -5471,7 +5498,7 @@ The opening message has already been delivered to the user automatically by the 
         call_tracker = CallTracker(
             agent_config=agent_config,
             room_name=ctx.room.name,
-            job_metadata=json.loads(job_metadata) if job_metadata else None,
+            job_metadata=normalize_dict(job_metadata) if job_metadata else None,
         )
         # Update call tracker reference so tools can log their usage
         call_tracker_ref["tracker"] = call_tracker
@@ -5487,11 +5514,8 @@ The opening message has already been delivered to the user automatically by the 
 
     # Source 1: per-contact campaign data passed in job metadata
     if job_metadata:
-        try:
-            _jm = json.loads(job_metadata)
-            dynamic_vars.update(_jm.get("dynamic_vars", {}))
-        except (json.JSONDecodeError, TypeError):
-            pass
+        _jm = normalize_dict(job_metadata)
+        dynamic_vars.update(_jm.get("dynamic_vars", {}))
 
     # Source 2: built-in {{user_number}} from SIP metadata
     direction = sip_metadata.get("direction", "inbound")
@@ -6099,27 +6123,26 @@ The opening message has already been delivered to the user automatically by the 
                 
                 # Check call_tracker metadata
                 if call_tracker and call_tracker.job_metadata:
-                    c_id = c_id or call_tracker.job_metadata.get("campaign_id")
-                    l_id = l_id or call_tracker.job_metadata.get("lead_id") or call_tracker.job_metadata.get("leadId") or call_tracker.job_metadata.get("campaign_number_id") or call_tracker.job_metadata.get("campaignNumberId")
-                    ext_id = ext_id or call_tracker.job_metadata.get("external_record_id") or call_tracker.job_metadata.get("externalRecordId") or call_tracker.job_metadata.get("record_id") or call_tracker.job_metadata.get("recordId")
-                    sip_call = sip_call or call_tracker.job_metadata.get("sip_call_to")
+                    ct_jm = normalize_dict(call_tracker.job_metadata)
+                    c_id = c_id or ct_jm.get("campaign_id")
+                    l_id = l_id or ct_jm.get("lead_id") or ct_jm.get("leadId") or ct_jm.get("campaign_number_id") or ct_jm.get("campaignNumberId")
+                    ext_id = ext_id or ct_jm.get("external_record_id") or ct_jm.get("externalRecordId") or ct_jm.get("record_id") or ct_jm.get("recordId")
+                    sip_call = sip_call or ct_jm.get("sip_call_to")
                 
                 # Check sip_metadata / job_metadata
                 if not c_id and "job_metadata" in locals() and job_metadata:
-                    c_id = c_id or job_metadata.get("campaign_id")
-                    l_id = l_id or job_metadata.get("lead_id") or job_metadata.get("leadId") or job_metadata.get("campaign_number_id") or job_metadata.get("campaignNumberId")
-                    ext_id = ext_id or job_metadata.get("external_record_id") or job_metadata.get("externalRecordId") or job_metadata.get("record_id") or job_metadata.get("recordId")
-                    sip_call = sip_call or job_metadata.get("sip_call_to")
+                    jm = normalize_dict(job_metadata)
+                    c_id = c_id or jm.get("campaign_id")
+                    l_id = l_id or jm.get("lead_id") or jm.get("leadId") or jm.get("campaign_number_id") or jm.get("campaignNumberId")
+                    ext_id = ext_id or jm.get("external_record_id") or jm.get("externalRecordId") or jm.get("record_id") or jm.get("recordId")
+                    sip_call = sip_call or jm.get("sip_call_to")
                 
                 # Check room metadata
                 if not c_id and ctx.room.metadata:
-                    try:
-                        rmeta = json.loads(ctx.room.metadata)
-                        c_id = c_id or rmeta.get("campaign_id")
-                        l_id = l_id or rmeta.get("lead_id") or rmeta.get("leadId") or rmeta.get("campaign_number_id") or rmeta.get("campaignNumberId")
-                        ext_id = ext_id or rmeta.get("external_record_id") or rmeta.get("externalRecordId") or rmeta.get("record_id") or rmeta.get("recordId")
-                    except Exception:
-                        pass
+                    rmeta = normalize_dict(ctx.room.metadata)
+                    c_id = c_id or rmeta.get("campaign_id")
+                    l_id = l_id or rmeta.get("lead_id") or rmeta.get("leadId") or rmeta.get("campaign_number_id") or rmeta.get("campaignNumberId")
+                    ext_id = ext_id or rmeta.get("external_record_id") or rmeta.get("externalRecordId") or rmeta.get("record_id") or rmeta.get("recordId")
                 
                 logger.info(f"[CampaignLifecycle] cleanup reached is_outbound={is_outbound_call} campaign_id={c_id} lead_id={l_id} external_record_id={ext_id} end_reason={end_reason}")
                 
