@@ -288,43 +288,43 @@ export default function CampaignsPage() {
                                                                 <Megaphone size={16} />
                                                             </Link>
                                                             
-                                                            {(campaign.status === "idle" || campaign.status === "draft" || campaign.status === "stopped") ? (
-                                                                isPreview ? (
-                                                                    <button 
-                                                                        onClick={() => alert("Preview Dialer is coming next. Use Progressive for auto-dial testing.")} 
-                                                                        className="p-2 rounded-md transition-colors text-blue-400 hover:text-blue-300 hover:bg-zinc-800"
-                                                                        title="Open Preview Dialer"
-                                                                    >
-                                                                        <Play size={16} />
-                                                                    </button>
-                                                                ) : (
-                                                                    <button 
-                                                                        onClick={() => handleUpdateStatus(campaign.id, "running")} 
-                                                                        className="p-2 rounded-md transition-colors text-zinc-400 hover:text-green-400 hover:bg-zinc-800"
-                                                                        title="Start Campaign"
-                                                                    >
-                                                                        <Play size={16} />
-                                                                    </button>
-                                                                )
-                                                            ) : campaign.status === "paused" ? (
-                                                                isPreview ? (
-                                                                    <button 
-                                                                        onClick={() => alert("Preview Dialer is coming next. Use Progressive for auto-dial testing.")} 
-                                                                        className="p-2 rounded-md transition-colors text-blue-400 hover:text-blue-300 hover:bg-zinc-800"
-                                                                        title="Open Preview Dialer"
-                                                                    >
-                                                                        <Play size={16} />
-                                                                    </button>
-                                                                ) : (
-                                                                    <button 
-                                                                        onClick={() => handleUpdateStatus(campaign.id, "resume")} 
-                                                                        className="p-2 rounded-md transition-colors text-zinc-400 hover:text-green-400 hover:bg-zinc-800"
-                                                                        title="Resume Campaign"
-                                                                    >
-                                                                        <Play size={16} />
-                                                                    </button>
-                                                                )
-                                                            ) : campaign.status === "running" ? (
+                                                             {(campaign.status === "idle" || campaign.status === "draft" || campaign.status === "stopped") ? (
+                                                                 isPreview ? (
+                                                                     <Link 
+                                                                         href={`/telephony/preview-dialer?campaign_id=${campaign.id}`} 
+                                                                         className="p-2 rounded-md transition-colors text-blue-400 hover:text-blue-300 hover:bg-zinc-800 flex items-center justify-center"
+                                                                         title="Open Preview Dialer"
+                                                                     >
+                                                                         <Play size={16} />
+                                                                     </Link>
+                                                                 ) : (
+                                                                     <button 
+                                                                         onClick={() => handleUpdateStatus(campaign.id, "running")} 
+                                                                         className="p-2 rounded-md transition-colors text-zinc-400 hover:text-green-400 hover:bg-zinc-800"
+                                                                         title="Start Campaign"
+                                                                     >
+                                                                         <Play size={16} />
+                                                                     </button>
+                                                                 )
+                                                             ) : campaign.status === "paused" ? (
+                                                                 isPreview ? (
+                                                                     <Link 
+                                                                         href={`/telephony/preview-dialer?campaign_id=${campaign.id}`} 
+                                                                         className="p-2 rounded-md transition-colors text-blue-400 hover:text-blue-300 hover:bg-zinc-800 flex items-center justify-center"
+                                                                         title="Open Preview Dialer"
+                                                                     >
+                                                                         <Play size={16} />
+                                                                     </Link>
+                                                                 ) : (
+                                                                     <button 
+                                                                         onClick={() => handleUpdateStatus(campaign.id, "resume")} 
+                                                                         className="p-2 rounded-md transition-colors text-zinc-400 hover:text-green-400 hover:bg-zinc-800"
+                                                                         title="Resume Campaign"
+                                                                     >
+                                                                         <Play size={16} />
+                                                                     </button>
+                                                                 )
+                                                             ) : campaign.status === "running" ? (
                                                                 <button onClick={() => handleUpdateStatus(campaign.id, "paused")} className="p-2 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800 rounded-md transition-colors" title="Pause Campaign">
                                                                     <Pause size={16} />
                                                                 </button>

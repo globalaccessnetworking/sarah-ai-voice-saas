@@ -106,6 +106,7 @@ const navigation: NavSection[] = [
             { href: "/sip-trunks", label: "SIP Trunks", icon: <PhoneOutgoing size={15} /> },
             { href: "/telephony", label: "Dispatcher", icon: <GitFork size={15} /> },
             { href: "/telephony/campaigns", label: "Campaigns", icon: <Megaphone size={15} /> },
+            { href: "/telephony/preview-dialer", label: "Preview Dialer", icon: <MonitorPlay size={15} />, badge: "New" },
         ],
     },
     {

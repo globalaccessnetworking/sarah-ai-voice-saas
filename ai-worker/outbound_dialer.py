@@ -100,9 +100,10 @@ class OutboundDialer:
 
         # Prepare Metadata Tunnel (Generic SaaS Format)
         metadata_obj = {
-            "type": "outbound",
-            "direction": "outbound",
-            "call_direction": "outbound",
+            "type": payload.get("type") or "outbound",
+            "source": payload.get("source") or "outbound",
+            "direction": payload.get("direction") or "outbound",
+            "call_direction": payload.get("call_direction") or "outbound",
             "agent_id": payload.get("agent_id"),
             "agent_slug": agent_slug,
             "agent_name": agent_name,

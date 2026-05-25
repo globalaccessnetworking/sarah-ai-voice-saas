@@ -6439,7 +6439,15 @@ The opening message has already been delivered to the user automatically by the 
                     l_id = ext_id
                     logger.info(f"[CampaignLifecycle] using external_record_id as lead_id fallback: {l_id}")
                 
-                if c_id and l_id:
+                is_preview = False
+                if ctx.room.metadata:
+                    rmeta = normalize_dict(ctx.room.metadata)
+                    if rmeta.get("type") == "preview" or rmeta.get("source") == "preview" or str(rmeta.get("campaign_id")).lower() == "default_campaign" or str(rmeta.get("lead_id")).lower().startswith("preview") or str(l_id).startswith("preview"):
+                        is_preview = True
+
+                if is_preview:
+                    logger.info("[CampaignLifecycle] preview call; skipping campaign update")
+                elif c_id and l_id:
                     if campaign_service:
                         dur = time.time() - call_tracker.call_start_time if call_tracker and call_tracker.call_start_time else 0
                         tc = len(call_tracker.transcription_segments) if call_tracker else 0
