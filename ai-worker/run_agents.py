@@ -1735,7 +1735,7 @@ def _normalize_openai_language(language):
     return language.split("-")[0] if language else "en"
 
 
-def get_stt(config):
+def get_stt(config, is_outbound_call=False):
     """Initialize STT based on configuration with hybrid Flux/Nova support and advanced settings"""
     from livekit.plugins import deepgram, google, openai
     try:
@@ -1755,6 +1755,34 @@ def get_stt(config):
     smart_formatting = stt_config.get("smart_formatting", True)
     remove_fillers = stt_config.get("remove_fillers", True)
     detect_language = stt_config.get("detect_language", False)
+
+    # dg_filler_words = the exact bool passed to Deepgram's filler_words option.
+    # Initialized from remove_fillers (DB/default). May be overridden in the outbound block below.
+    dg_filler_words = remove_fillers
+
+    # --- Outbound STT overrides (only applied when is_outbound_call=True) ---
+    # These env vars tune Deepgram for low-latency outbound/preview phone calls.
+    # They are NEVER applied to inbound calls (is_outbound_call=False).
+    if is_outbound_call:
+        # Smart-format override: OUTBOUND_STT_SMART_FORMAT=false disables punctuation post-processing.
+        _env_sf = os.getenv("OUTBOUND_STT_SMART_FORMAT")
+        if _env_sf is not None:
+            smart_formatting = _env_sf.strip().lower() not in ("false", "0", "no")
+            logger.info(f"[STT_TUNE] OUTBOUND_STT_SMART_FORMAT env override: smart_format={smart_formatting}")
+
+        # Filler-words override.
+        # OUTBOUND_STT_FILLER_WORDS=false → Deepgram filler_words=False (fillers omitted from transcript).
+        # dg_filler_words is the DIRECT value sent to Deepgram (no inversion).
+        # remove_fillers is kept as the logical inverse for legacy code that may read it.
+        # Both are logged explicitly so there is no confusion.
+        _env_fw = os.getenv("OUTBOUND_STT_FILLER_WORDS")
+        if _env_fw is not None:
+            dg_filler_words = _env_fw.strip().lower() not in ("false", "0", "no")
+            remove_fillers = not dg_filler_words   # legacy inverse: kept for reference only
+            logger.info(
+                f"[STT_TUNE] OUTBOUND_STT_FILLER_WORDS env override: "
+                f"filler_words(->Deepgram)={dg_filler_words} remove_fillers(legacy)={remove_fillers}"
+            )
 
     # Parse custom vocabulary and strictly filter out Urdu to prevent Deepgram 400 URL Crash
     import re
@@ -1777,7 +1805,7 @@ def get_stt(config):
         deepgram_options = {
             "language": language,
             "smart_format": smart_formatting,
-            "filler_words": remove_fillers,
+            "filler_words": dg_filler_words,  # authoritative value: env override or remove_fillers passthrough
         }
 
         # Add language detection if enabled (not supported by Flux/STTv2)
@@ -1846,7 +1874,31 @@ def get_stt(config):
             # Calculate endpointing_ms: 500ms at responsiveness=0.0, 10ms at responsiveness=1.0
             endpointing_ms = max(10, int(500 - (responsiveness * 490)))
 
-            logger.info(f"Initializing Deepgram Nova STT: model={model}, responsiveness={responsiveness}, endpointing_ms={endpointing_ms}ms, language={language}, detect_language={detect_language}, vocab_count={len(vocab_list)}, smart_format={smart_formatting}, filler_words={remove_fillers}")
+            # Outbound env override: OUTBOUND_STT_ENDPOINTING_MS fully replaces the formula.
+            # If the env var is absent or invalid, the formula value above is kept unchanged.
+            if is_outbound_call:
+                _env_ep = os.getenv("OUTBOUND_STT_ENDPOINTING_MS")
+                if _env_ep is not None:
+                    try:
+                        endpointing_ms = max(10, int(_env_ep))
+                        logger.info(f"[STT_TUNE] OUTBOUND_STT_ENDPOINTING_MS env override: endpointing_ms={endpointing_ms}ms")
+                    except ValueError:
+                        logger.warning(
+                            f"[STT_TUNE] Invalid OUTBOUND_STT_ENDPOINTING_MS={_env_ep!r}; "
+                            f"falling back to formula value endpointing_ms={endpointing_ms}ms"
+                        )
+
+            logger.info(
+                f"Initializing Deepgram Nova STT: model={model}, responsiveness={responsiveness}, "
+                f"endpointing_ms={endpointing_ms}ms, language={language}, "
+                f"detect_language={detect_language}, vocab_count={len(vocab_list)}, "
+                f"smart_format={smart_formatting}, filler_words={dg_filler_words} "
+                f"(is_outbound_call={is_outbound_call})"
+            )
+            logger.info(
+                f"[STT_TUNE] final effective settings: "
+                f"endpointing_ms={endpointing_ms} smart_format={smart_formatting} filler_words={dg_filler_words}"
+            )
 
             return deepgram.STT(
                 model=model,
@@ -4214,7 +4266,7 @@ Your goal is to collect: **Issue, District, Address, Landmark, and Name/Phone**.
                 logger.info("Realtime mode enabled — skipping STT, TTS, VAD, and turn detector initialization")
         else:
             llm_instance = get_llm(agent_config)
-            stt = get_stt(agent_config)
+            stt = get_stt(agent_config, is_outbound_call=is_outbound_call)
             tts_instance = get_tts(agent_config)
 
             # Log active STT configuration
@@ -4412,7 +4464,36 @@ Your goal is to collect: **Issue, District, Address, Landmark, and Name/Phone**.
     
     # 'VAD MEMORY WINDOW' Slider -> vad_padding (Pre-speech buffer)
     vad_padding = tools_settings.get("vad_padding", 0.3)
-    
+
+    # --- Outbound VAD + response-delay overrides ---
+    # Applied AFTER DB reads so env vars win over GUI sliders for outbound/preview calls.
+    # Inbound calls (is_outbound_call=False) are completely unaffected.
+    if is_outbound_call:
+        try:
+            _env_sil = os.getenv("OUTBOUND_MIN_SILENCE_MS")
+            if _env_sil:
+                vad_min_silence = max(0.05, float(_env_sil) / 1000.0)
+        except ValueError:
+            logger.warning(f"[VAD_TUNE] Invalid OUTBOUND_MIN_SILENCE_MS; using DB value {int(vad_min_silence*1000)}ms")
+        try:
+            _env_pad = os.getenv("OUTBOUND_VAD_PADDING_MS")
+            if _env_pad:
+                vad_padding = max(0.05, float(_env_pad) / 1000.0)
+        except ValueError:
+            logger.warning(f"[VAD_TUNE] Invalid OUTBOUND_VAD_PADDING_MS; using DB value {int(vad_padding*1000)}ms")
+        try:
+            _env_delay = os.getenv("OUTBOUND_RESPONSE_DELAY_SEC")
+            if _env_delay:
+                agent_response_delay = max(0.05, float(_env_delay))
+        except ValueError:
+            logger.warning(f"[VAD_TUNE] Invalid OUTBOUND_RESPONSE_DELAY_SEC; using DB value {agent_response_delay}s")
+        logger.info(
+            f"[VAD_TUNE] final effective settings (outbound): "
+            f"min_silence_ms={int(vad_min_silence*1000)} "
+            f"vad_padding_ms={int(vad_padding*1000)} "
+            f"response_delay_sec={agent_response_delay}"
+        )
+
     # Log the dynamic tuning values
     logger.info(f"Dynamic Tuning (V23.20): ResponseDelay={agent_response_delay}s | BargeIn={agent_interrupt_duration}s | VAD_Threshold={vad_threshold} | VAD_Padding={vad_padding}s")
 
@@ -5869,6 +5950,14 @@ The opening message has already been delivered to the user automatically by the 
                     elif hasattr(session, "_ts_stt_final"):
                         diff = int((ts_now - session._ts_stt_final) * 1000)
                         logger.info(f"[LATENCY] total_response_ms={diff}")
+                        # Full per-turn gap: user-stopped-speaking → first agent audio
+                        _ts_user_stopped = getattr(session, "_ts_user_stopped_speaking", None)
+                        if _ts_user_stopped:
+                            total_gap_ms = int((ts_now - _ts_user_stopped) * 1000)
+                            logger.info(
+                                f"[TURN_LATENCY] llm_tts_to_first_audio_ms={diff} "
+                                f"total_user_done_to_agent_audio_ms={total_gap_ms}"
+                            )
                         delattr(session, "_ts_stt_final")
 
                     if call_tracker:
@@ -5909,8 +5998,11 @@ The opening message has already been delivered to the user automatically by the 
                         logger.info("[BARGE_IN] user_state_changed speaking detected while agent active; interrupting")
                         _attempt_barge_in(ts_user_speech)
 
-                # User stopped speaking — STT latency measurement
+                # User stopped speaking — STT latency measurement + TURN_LATENCY anchor
                 if "speaking" in old_str and "speaking" not in new_str:
+                    _ts_user_stopped = time.time()
+                    setattr(session, "_ts_user_stopped_speaking", _ts_user_stopped)
+                    logger.info(f"[TURN_LATENCY] user_speech_ended_ts={_ts_user_stopped:.3f}")
                     if call_tracker:
                         call_tracker.on_user_stopped_speaking()
             except Exception as e:
@@ -5925,7 +6017,16 @@ The opening message has already been delivered to the user automatically by the 
                 is_final = getattr(event, 'is_final', False)
                 transcript = getattr(event, 'transcript', '')
                 if is_final and transcript:
-                    setattr(session, "_ts_stt_final", time.time())
+                    _ts_stt_final = time.time()
+                    setattr(session, "_ts_stt_final", _ts_stt_final)
+                    # Compute STT finalization gap: time from user-stopped-speaking → final transcript
+                    _ts_user_stopped = getattr(session, "_ts_user_stopped_speaking", None)
+                    if _ts_user_stopped:
+                        stt_wait_ms = int((_ts_stt_final - _ts_user_stopped) * 1000)
+                        logger.info(
+                            f"[TURN_LATENCY] stt_wait_ms={stt_wait_ms} "
+                            f"user_stopped_ts={_ts_user_stopped:.3f} stt_final_ts={_ts_stt_final:.3f}"
+                        )
                     logger.debug(f"Final transcript received: {transcript[:50]}...")
                     
                     # 4. Add transcript fallback for Barge-in proof
