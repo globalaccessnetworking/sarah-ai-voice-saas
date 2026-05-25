@@ -148,9 +148,13 @@ class OutboundDialer:
                 combined_data = { **payload, **lead_data }
                 
                 fast_greeting = render_template(opening_message, combined_data)
-                tts_provider = agent_config.get('tts_config', {}).get('provider', 'N/A')
-                tts_model = agent_config.get('tts_config', {}).get('model', 'N/A')
-                tts_voice = agent_config.get('tts_config', {}).get('voice_id', 'N/A')
+                
+                tts_config = payload.get("tts_config", {}) or agent_config.get("tts_config", {})
+                tts_provider = tts_config.get("provider") or payload.get("tts_provider") or agent_config.get("tts_config", {}).get("provider") or "deepgram"
+                tts_model = tts_config.get("model") or payload.get("tts_model") or agent_config.get("tts_config", {}).get("model")
+                tts_voice = tts_config.get("voice_id") or payload.get("tts_voice_id") or agent_config.get("tts_config", {}).get("voice_id")
+                
+                logger.info(f"[GREETING_PREWARM] tts_config provider={tts_provider} model={tts_model} voice_id={tts_voice}")
                 
                 hash_str = f"{fast_greeting}_{tts_provider}_{tts_model}_{tts_voice}"
                 cache_key = hashlib.sha256(hash_str.encode()).hexdigest()[:16]
@@ -166,20 +170,21 @@ class OutboundDialer:
                     
                     greeting_tts = None
                     try:
-                        from app.services.config_service import get_api_key
+                        from app.services.config_service import config_service
+                        import os
                         if tts_provider.lower() == "deepgram":
                             import livekit.plugins.deepgram
-                            api_key = get_api_key("deepgram")
+                            api_key = config_service.get_api_key("deepgram") or os.getenv("DEEPGRAM_API_KEY")
                             dg_model = tts_model if tts_model and tts_model != "N/A" else "aura-asteria-en"
                             greeting_tts = livekit.plugins.deepgram.TTS(model=dg_model, api_key=api_key)
                         elif tts_provider.lower() == "cartesia":
                             import livekit.plugins.cartesia
-                            api_key = get_api_key("cartesia")
+                            api_key = config_service.get_api_key("cartesia") or os.getenv("CARTESIA_API_KEY")
                             cartesia_voice = tts_voice if tts_voice and tts_voice != "N/A" else "79a125e8-cd45-4c13-8a67-188112f4dd22"
                             greeting_tts = livekit.plugins.cartesia.TTS(voice=cartesia_voice, api_key=api_key)
                         elif tts_provider.lower() == "elevenlabs":
                             import livekit.plugins.elevenlabs
-                            api_key = get_api_key("elevenlabs")
+                            api_key = config_service.get_api_key("elevenlabs") or os.getenv("ELEVEN_LABS_API_KEY")
                             eleven_voice = tts_voice if tts_voice and tts_voice != "N/A" else "jBpfuIE2acCO8z3wKNLl"
                             greeting_tts = livekit.plugins.elevenlabs.TTS(voice=eleven_voice, api_key=api_key)
                         else:

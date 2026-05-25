@@ -4915,6 +4915,18 @@ The opening message has already been delivered to the user automatically by the 
     session = None
     if test_mode != "text":
         session = voice.AgentSession(use_tts_aligned_transcript=True)
+        
+        # Call Lifecycle Flags
+        setattr(session, "sip_participant_connected", False)
+        setattr(session, "sip_participant_disconnected", False)
+        setattr(session, "greeting_started", False)
+        setattr(session, "greeting_first_audio_started", False)
+        setattr(session, "greeting_completed", False)
+        setattr(session, "user_transcript_count", 0)
+        setattr(session, "agent_speech_count", 0)
+        setattr(session, "disconnected_before_greeting", False)
+        setattr(session, "disconnected_during_greeting", False)
+        setattr(session, "no_conversation", False)
 
         # Build room options
         room_options = None
@@ -5074,6 +5086,10 @@ The opening message has already been delivered to the user automatically by the 
                         citizen = p
                         break
                 target = citizen or (next(iter(ctx.room.remote_participants.values())) if ctx.room.remote_participants else None)
+                
+                # Increment user transcript count
+                count = getattr(session, "user_transcript_count", 0)
+                setattr(session, "user_transcript_count", count + 1)
                 
                 # Check for Barge-In overlap fallback
                 try:
@@ -5263,6 +5279,8 @@ The opening message has already been delivered to the user automatically by the 
                         
                         start_time = asyncio.get_event_loop().time()
                         first_frame = True
+                        
+                        setattr(session, "greeting_started", True)
 
                         for i in range(0, len(raw_pcm), chunk_size):
                             if interrupted: break
@@ -5276,6 +5294,7 @@ The opening message has already been delivered to the user automatically by the 
                                 logger.info(f"[GREETING] source=cached_audio")
                                 logger.info(f"[GREETING] answer_to_first_audio_ms={answer_to_first_audio_ms}")
                                 first_frame = False
+                                setattr(session, "greeting_first_audio_started", True)
                                 
                             await source.capture_frame(rtc.AudioFrame(chunk, sample_rate, num_channels, chunk_samples))
                             
@@ -5285,8 +5304,11 @@ The opening message has already been delivered to the user automatically by the 
                             if sleep_duration > 0:
                                 await asyncio.sleep(sleep_duration)
 
-                        if interrupted or not interrupted:
+                        if interrupted or getattr(session, "sip_participant_disconnected", False):
                             await ctx.room.local_participant.unpublish_track(publication.sid)
+                        else:
+                            await ctx.room.local_participant.unpublish_track(publication.sid)
+                            setattr(session, "greeting_completed", True)
                         
                     except Exception as e:
                         logger.error(f"[PBX] Greeting V23.9 Error: {e}")
@@ -5356,6 +5378,7 @@ The opening message has already been delivered to the user automatically by the 
                                             logger.info("[GREETING] cache_hit=false; synthesizing in background, playing fallback immediately...")
                                             logger.info("[GREETING] source=session_say_fallback reason=cache_miss")
                                             setattr(session, "_ts_greeting_say", time.time())
+                                            setattr(session, "greeting_started", True)
                                             session.say(fast_greeting, allow_interruptions=True)
                                             
                                             async def build_cache():
@@ -5396,6 +5419,7 @@ The opening message has already been delivered to the user automatically by the 
                                             logger.info(f"[GREETING] direct_pcm_unavailable reason={str(e)}")
                                             logger.info(f"[GREETING] source=session_say_fallback reason={str(e)}")
                                             setattr(session, "_ts_greeting_say", time.time())
+                                            setattr(session, "greeting_started", True)
                                             session.say(fast_greeting, allow_interruptions=True)
                                         except Exception as fallback_e:
                                             logger.error(f"[PBX] session.say fallback failed: {fallback_e}")
@@ -5405,6 +5429,7 @@ The opening message has already been delivered to the user automatically by the 
                             try:
                                 logger.info("[GREETING] source=session_say_fallback reason=fast_tts_disabled")
                                 setattr(session, "_ts_greeting_say", time.time())
+                                setattr(session, "greeting_started", True)
                                 session.say(fast_greeting, allow_interruptions=True)
                             except RuntimeError as e:
                                 if "AgentSession is closing" in str(e):
@@ -5415,6 +5440,7 @@ The opening message has already been delivered to the user automatically by the 
                     session.generate_reply(instructions=f"Greet the user with exactly this message: {fast_greeting}")
                 else:
                     try:
+                        setattr(session, "greeting_started", True)
                         session.say(fast_greeting)
                     except RuntimeError as e:
                         if "AgentSession is closing" in str(e):
@@ -5736,6 +5762,13 @@ The opening message has already been delivered to the user automatically by the 
                 logger.debug(f"Agent state changed: {state}")
                 if state == "speaking" or "speaking" in str(state).lower():
                     setattr(session, "_agent_speaking", True)
+                    
+                    if not getattr(session, "greeting_first_audio_started", False):
+                        setattr(session, "greeting_first_audio_started", True)
+                    
+                    speech_count = getattr(session, "agent_speech_count", 0)
+                    setattr(session, "agent_speech_count", speech_count + 1)
+                    
                     logger.info(f"[BARGE_IN] agent_speaking=true state={state}")
                     ts_now = time.time()
                     if hasattr(session, "_ts_greeting_say"):
@@ -5753,6 +5786,9 @@ The opening message has already been delivered to the user automatically by the 
                     setattr(session, "_agent_speaking", False)
                     setattr(session, "_ts_agent_stopped_speaking", time.time())
                     logger.info(f"[BARGE_IN] agent_speaking=false state={state}")
+                    
+                    if getattr(session, "greeting_first_audio_started", False) and not getattr(session, "greeting_completed", False):
+                        setattr(session, "greeting_completed", True)
             except Exception as e:
                 logger.debug(f"Error handling agent state change: {e}")
 
@@ -6291,24 +6327,24 @@ The opening message has already been delivered to the user automatically by the 
                         dur = time.time() - call_tracker.call_start_time if call_tracker and call_tracker.call_start_time else 0
                         tc = len(call_tracker.transcription_segments) if call_tracker else 0
                         
-                        agent_speech_count = getattr(session, "_agent_speech_count", 0) if "session" in locals() and session else 0
-                        has_user_transcript = tc > 0
-                        disconnected_before_greeting = "session" in locals() and session and getattr(session, "_disconnected_before_greeting", False)
+                        agent_speech_count = getattr(session, "agent_speech_count", 0) if "session" in locals() and session else 0
+                        user_transcript_count = getattr(session, "user_transcript_count", 0) if "session" in locals() and session else tc
                         
-                        greeting_triggered = "session" in locals() and session and getattr(session, "_greeting_triggered", False)
+                        disconnected_before_greeting = "session" in locals() and session and getattr(session, "disconnected_before_greeting", False)
+                        disconnected_during_greeting = "session" in locals() and session and getattr(session, "disconnected_during_greeting", False)
                         
                         if disconnected_before_greeting:
                             logger.info("[CampaignLifecycle] outcome disconnected_before_greeting; marking failed")
                             campaign_service.mark_campaign_call_failed(c_id, l_id, "disconnected_before_greeting")
-                        elif not has_user_transcript and agent_speech_count == 0 and not greeting_triggered:
-                            logger.info("[CampaignLifecycle] outcome no_user_audio_or_agent_audio; marking failed")
-                            campaign_service.mark_campaign_call_failed(c_id, l_id, "no_answer")
-                        elif end_reason in ["hangup", "completed", "agent_hangup"] and (has_user_transcript or greeting_triggered):
-                            campaign_service.mark_campaign_call_completed(c_id, l_id, dur, tc)
-                            logger.info(f"[CampaignLifecycle] successfully marked call completed for {c_id}/{l_id}")
+                        elif disconnected_during_greeting:
+                            logger.info("[CampaignLifecycle] outcome disconnected_during_greeting; marking failed")
+                            campaign_service.mark_campaign_call_failed(c_id, l_id, "disconnected_during_greeting")
+                        elif user_transcript_count == 0:
+                            logger.info("[CampaignLifecycle] outcome no_conversation; marking failed")
+                            campaign_service.mark_campaign_call_failed(c_id, l_id, "no_conversation")
                         else:
-                            campaign_service.mark_campaign_call_failed(c_id, l_id, end_reason)
-                            logger.info(f"[CampaignLifecycle] successfully marked call failed for {c_id}/{l_id} reason={end_reason}")
+                            campaign_service.mark_campaign_call_completed(c_id, l_id, dur, tc)
+                            logger.info(f"[CampaignLifecycle] outcome completed; marking completed for {c_id}/{l_id}")
                     else:
                         logger.warning("[CampaignLifecycle] campaign_service is not loaded")
                 else:
