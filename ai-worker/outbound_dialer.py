@@ -87,7 +87,13 @@ class OutboundDialer:
         contact_name = payload.get("contact_name") or payload.get("lead_name") or (payload.get("citizen_name") if legacy_mode else None) or "Valued Customer"
         call_goal = payload.get("call_goal") or (payload.get("issue_type") if legacy_mode else None) or "General Inquiry"
         campaign_id = payload.get("campaign_id") or "default_campaign"
-        agent_name = payload.get("agent_name") or "outbound-agent"
+        # agent_display_name = human-readable DB name (e.g. "Generic AI Dialer") — used in metadata for
+        # routing lookups inside run_agents.py. Do NOT use for LiveKit dispatch.
+        agent_display_name = payload.get("agent_name") or "outbound-agent"
+        # dispatch_agent_name = the name registered in WorkerOptions (AGENT_NAME env var).
+        # LiveKit dispatch MUST use this exact string or no worker will accept the job.
+        dispatch_agent_name = os.getenv("AGENT_NAME", "outbound-agent")
+        logger.info(f"[Dialer] agent_display_name={agent_display_name!r} dispatch_agent_name={dispatch_agent_name!r}")
         agent_slug = payload.get("agent_slug")
         trunk_id = payload.get("sip_trunk_id") or (payload.get("trunk_id") if legacy_mode else None) or SIP_TRUNK_ID
         agent_config = payload.get("config", {})
@@ -106,7 +112,7 @@ class OutboundDialer:
             "call_direction": payload.get("call_direction") or "outbound",
             "agent_id": payload.get("agent_id"),
             "agent_slug": agent_slug,
-            "agent_name": agent_name,
+            "agent_name": agent_display_name,
             "phone": phone,
             "to_number": phone,
             "contact_name": contact_name,
@@ -305,8 +311,11 @@ class OutboundDialer:
             logger.info(f"SIP Call successfully dispatched. SIP ID: {sip_call_id}")
             
             # Step 2: Explicitly Dispatch Agent
+            # CRITICAL: agent_name here MUST match the name registered in WorkerOptions
+            # (i.e. AGENT_NAME env var = "outbound-agent"), NOT the DB display name.
+            logger.info(f"[Dialer] Dispatching agent to room={room_name} worker={dispatch_agent_name!r}")
             dispatch_request = api.CreateAgentDispatchRequest(
-                agent_name=agent_name,
+                agent_name=dispatch_agent_name,
                 room=room_name,
                 metadata=metadata,
             )
