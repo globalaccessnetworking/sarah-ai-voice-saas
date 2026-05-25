@@ -5334,12 +5334,84 @@ The opening message has already been delivered to the user automatically by the 
                 is_outbound = is_outbound_call or sip_metadata.get("direction") == "outbound" or ctx.room.name.startswith("outbound_")
                 
                 if is_outbound:
-                    delay_sec = float(os.getenv("OUTBOUND_GREETING_DELAY_SEC", "2.5"))
-                    logger.info(f"[OUTBOUND] Waiting {delay_sec}s for SIP answer/media before greeting")
-                    ts_delay_start = time.time()
-                    await asyncio.sleep(delay_sec)
-                    ts_delay_end = time.time()
-                    logger.info(f"[LATENCY] greeting_delay_ms={int((ts_delay_end - ts_delay_start) * 1000)}")
+                    # SIP Answer Readiness Gate
+                    logger.info("[SIP_ANSWER_WAIT] Starting SIP answer readiness check")
+                    ts_wait_start = time.time()
+                    answer_confirmed = False
+                    
+                    last_log_time = 0.0
+                    last_logged_attrs = None
+                    first_obs_logged = False
+                    
+                    max_wait = 15.0
+                    status_keys = [
+                        "sip.callStatus", "sip.call_status", "callStatus", 
+                        "call_status", "status", "sipCallStatus"
+                    ]
+                    ready_values = {
+                        "active", "answered", "established", 
+                        "in-progress", "in_progress", "connected"
+                    }
+                    
+                    while time.time() - ts_wait_start < max_wait:
+                        if getattr(session, "_call_ending", False) or getattr(session, "sip_participant_disconnected", False):
+                            logger.info("[SIP_ANSWER_WAIT] Break wait: session call ending or participant disconnected")
+                            break
+                            
+                        if not ctx.room.remote_participants:
+                            logger.info("[SIP_ANSWER_WAIT] Break wait: no remote participants in room")
+                            break
+                            
+                        participant = None
+                        for p in ctx.room.remote_participants.values():
+                            participant = p
+                            break
+                            
+                        if not participant:
+                            break
+                            
+                        attrs = getattr(participant, 'attributes', {}) or {}
+                        
+                        now = time.time()
+                        attrs_changed = (attrs != last_logged_attrs)
+                        time_elapsed_1s = (now - last_log_time >= 1.0)
+                        
+                        if not first_obs_logged or attrs_changed or time_elapsed_1s:
+                            logger.info(f"[SIP_ANSWER_WAIT] Current attributes: {attrs}")
+                            first_obs_logged = True
+                            last_log_time = now
+                            last_logged_attrs = attrs.copy() if hasattr(attrs, 'copy') else attrs
+                            
+                        status_found = None
+                        for key in status_keys:
+                            val = attrs.get(key)
+                            if val is not None:
+                                val_str = str(val).strip().lower()
+                                if val_str in ready_values:
+                                    status_found = (key, val)
+                                    break
+                                    
+                        if status_found:
+                            logger.info(f"[SIP_ANSWER_WAIT] answer_confirmed=true (matched attribute key={status_found[0]} value={status_found[1]})")
+                            answer_confirmed = True
+                            break
+                            
+                        await asyncio.sleep(0.1)
+                        
+                    if answer_confirmed:
+                        media_settle_ms = int(os.getenv("OUTBOUND_MEDIA_SETTLE_MS", "400"))
+                        logger.info(f"[OUTBOUND] media_settle_ms={media_settle_ms}; starting greeting")
+                        await asyncio.sleep(media_settle_ms / 1000.0)
+                        ts_delay_end = time.time()
+                    else:
+                        if ctx.room.remote_participants and not getattr(session, "_call_ending", False) and not getattr(session, "sip_participant_disconnected", False):
+                            delay_sec = float(os.getenv("OUTBOUND_GREETING_DELAY_SEC", "2.5"))
+                            logger.info(f"[SIP_ANSWER_WAIT] Timeout waiting for active status. Falling back to OUTBOUND_GREETING_DELAY_SEC={delay_sec}s")
+                            await asyncio.sleep(delay_sec)
+                            ts_delay_end = time.time()
+                        else:
+                            logger.info("[SIP_ANSWER_WAIT] Timeout or disconnected. Skipping fallback delay.")
+                            ts_delay_end = time.time()
                     
                     if not list(ctx.room.remote_participants.values()):
                         logger.warning("[OUTBOUND] SIP participant disconnected before greeting; skipping initial greeting.")
