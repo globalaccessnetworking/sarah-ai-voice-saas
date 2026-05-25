@@ -4,7 +4,7 @@ CREATE TABLE "vicidial_mappings" (
 	"vicidial_campaign_id" varchar(100),
 	"vicidial_list_id" varchar(100),
 	"vicidial_ingroup" varchar(100),
-	"agent_id" uuid,
+	"agent_id" text,
 	"opening_message" text,
 	"call_goal" text,
 	"script" text,

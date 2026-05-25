@@ -1,0 +1,1 @@
+ALTER TABLE "vicidial_mappings" ALTER COLUMN "agent_id" SET DATA TYPE text;
