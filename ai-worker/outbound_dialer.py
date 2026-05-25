@@ -171,7 +171,6 @@ class OutboundDialer:
                     greeting_tts = None
                     try:
                         from app.services.config_service import config_service
-                        import os
                         if tts_provider.lower() == "deepgram":
                             import livekit.plugins.deepgram
                             api_key = config_service.get_api_key("deepgram") or os.getenv("DEEPGRAM_API_KEY")
@@ -274,7 +273,7 @@ class OutboundDialer:
                         logger.info(f"[Dialer] Calling sip_call_to={payload.get('sip_call_to')} phone={payload.get('phone')} campaign_id={payload.get('campaign_id')}")
                         await self.make_outbound_call(lkapi, payload)
                 except Exception as e:
-                    logger.error(f"Dialer Loop Error: {e}")
+                    logger.exception("Dialer Loop Error")
                     await asyncio.sleep(2)
 
 if __name__ == "__main__":
