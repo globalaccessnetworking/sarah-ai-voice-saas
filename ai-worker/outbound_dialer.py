@@ -148,19 +148,48 @@ class OutboundDialer:
                 from run_agents import get_tts
                 from app.services.personalization import render_template
                 
-                # Combine payload and lead_data
+                # Combine payload and lead_data for greeting template rendering
                 lead_data = payload.get("lead_data") or {}
                 combined_data = { **payload, **lead_data }
                 
                 fast_greeting = render_template(opening_message, combined_data)
                 
                 from app.services.greeting_cache import resolve_effective_tts_config, get_greeting_cache_key
+                
+                # Log raw payload tts_config so we can confirm it arrives from frontend
+                logger.info(f"[GREETING_PREWARM] payload_tts_config={payload.get('tts_config')}")
+                
+                # Conditional DB fallback: only query DB when payload is missing provider or model
+                _payload_tts = payload.get("tts_config") or {}
+                _needs_db_fallback = (
+                    not _payload_tts.get("provider") or
+                    str(_payload_tts.get("provider", "")).strip() in ("", "None", "N/A") or
+                    not _payload_tts.get("model") or
+                    str(_payload_tts.get("model", "")).strip() in ("", "None", "N/A")
+                )
+                
+                if _needs_db_fallback:
+                    _lookup_key = payload.get("agent_slug") or payload.get("agent_id")
+                    if _lookup_key:
+                        try:
+                            from app.services.agent_storage import get_agent_config_by_id_or_slug
+                            _db_agent = await get_agent_config_by_id_or_slug(_lookup_key)
+                            if _db_agent and _db_agent.get("tts_config", {}).get("provider"):
+                                payload["tts_config"] = _db_agent["tts_config"]
+                                logger.info(f"[GREETING_PREWARM] tts_config resolved from DB: {payload['tts_config']}")
+                            else:
+                                logger.warning(f"[GREETING_PREWARM] DB lookup returned no tts_config for slug/id={_lookup_key}")
+                        except Exception as db_e:
+                            logger.warning(f"[GREETING_PREWARM] DB fallback failed: {db_e}; using defaults")
+                    else:
+                        logger.warning("[GREETING_PREWARM] no agent_slug/agent_id for DB fallback; using defaults")
+                
                 tts_provider, effective_model, effective_voice = resolve_effective_tts_config(payload, agent_config)
                 
                 logger.info(f"[GREETING_PREWARM] tts_config provider={tts_provider} model={effective_model} voice_id={effective_voice}")
                 
                 from app.services.config_service import config_service
-                api_key = config_service.get_api_key(tts_provider.lower()) or os.getenv(f"{tts_provider.upper()}_API_KEY")
+                api_key = config_service.get_api_key(tts_provider.lower()) or os.getenv(f"{tts_provider.upper()}_API_KEY") or os.getenv("DEEPGRAM_API_KEY")
                 api_key_present = bool(api_key)
                 logger.info(f"[GREETING_PREWARM] api_key_present={str(api_key_present).lower()} provider={tts_provider}")
                 
@@ -237,11 +266,18 @@ class OutboundDialer:
                             logger.info(f"[GREETING_PREWARM] ready path={cache_file} duration_ms={duration_ms} cache_synthesis_ms={int((time.time() - ts_cache_start)*1000)}")
 
                         try:
-                            await asyncio.wait_for(build_cache_audio(), timeout=1.2)
+                            await asyncio.wait_for(build_cache_audio(), timeout=5.0)
                         except asyncio.TimeoutError:
                             logger.error(f"[GREETING_PREWARM] failed reason=timeout; continuing_without_cache=true")
                         except Exception as syn_e:
                             logger.error(f"[GREETING_PREWARM] failed reason={syn_e}; continuing_without_cache=true")
+                
+                # Confirm readiness before SIP dispatch (non-fatal either way)
+                if cache_file.exists():
+                    logger.info(f"[GREETING_PREWARM] confirmed_ready path={cache_file}")
+                else:
+                    logger.warning("[GREETING_PREWARM] cache_not_ready before SIP dispatch; worker will use session_say fallback")
+                    
             except Exception as prewarm_err:
                 logger.error(f"[GREETING_PREWARM] failed reason={prewarm_err}")
 

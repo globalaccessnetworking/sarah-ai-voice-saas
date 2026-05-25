@@ -5542,6 +5542,37 @@ The opening message has already been delivered to the user automatically by the 
 
     # --- PHASE 2: PREDICTIVE PRE-WARM (UPLIFTAI IGNITION) ---
     if session:
+        # Shared barge-in interruption helper
+        def _attempt_barge_in(ts_user_speech):
+            """Call all supported interruption methods and log results."""
+            try:
+                ts_agent_speaking = getattr(session, "_ts_agent_speaking", ts_user_speech)
+                latency_ms = int((ts_user_speech - ts_agent_speaking) * 1000)
+                interrupted = False
+
+                if hasattr(session, "cancel_response"):
+                    try:
+                        logger.info("[BARGE_IN] interrupt_attempt method=cancel_response")
+                        session.cancel_response()
+                        interrupted = True
+                        logger.info(f"[BARGE_IN] interrupt_success method=cancel_response elapsed_ms={latency_ms}")
+                    except Exception as e:
+                        logger.debug(f"[BARGE_IN] cancel_response failed: {e}")
+
+                if not interrupted and hasattr(session, "interrupt"):
+                    try:
+                        logger.info("[BARGE_IN] interrupt_attempt method=interrupt")
+                        session.interrupt()
+                        interrupted = True
+                        logger.info(f"[BARGE_IN] interrupt_success method=interrupt elapsed_ms={latency_ms}")
+                    except Exception as e:
+                        logger.debug(f"[BARGE_IN] interrupt failed: {e}")
+
+                if not interrupted:
+                    logger.info("[BARGE_IN] interrupt_failed no_supported_method")
+            except Exception as e:
+                logger.debug(f"[BARGE_IN] _attempt_barge_in error: {e}")
+
         @session.on("user_speech_started")
         def on_user_speech(*args):
             """
@@ -5549,53 +5580,24 @@ The opening message has already been delivered to the user automatically by the 
             We use this to 'ignite' the TTS session in the background
             so it's ready before the LLM even finishes generating.
             """
-            # Barge-in tracking
+            # BARGE_IN_DEBUG probe — confirms whether this event fires at all in current SDK
+            logger.info(f"[BARGE_IN_DEBUG] event=user_speech_started args_count={len(args)}")
             try:
-                import time
                 is_speaking = getattr(session, "_agent_speaking", False)
                 call_ending = getattr(session, "_call_ending", False)
-                
-                # Try to safely get the string value of the state enum
-                state_val = getattr(session, "state", None)
-                state = str(state_val.value) if hasattr(state_val, "value") else str(state_val)
-                
+                state_raw = getattr(session, "state", None)
+                state = str(getattr(state_raw, "value", state_raw)).lower()
                 ts_user_speech = time.time()
-                ts_agent_speaking = getattr(session, "_ts_agent_speaking", ts_user_speech)
                 ts_agent_stopped = getattr(session, "_ts_agent_stopped_speaking", 0)
-                
-                logger.info(f"[BARGE_IN] user_speech_started agent_speaking={is_speaking} state={state} call_ending={call_ending} ts={ts_user_speech}")
-                
                 recently_spoke = not is_speaking and (ts_user_speech - ts_agent_stopped < 0.8)
-                
-                if is_speaking or state in ["speaking", "thinking", "generating"] or "speak" in state.lower() or recently_spoke:
-                    logger.info("[BARGE_IN] user speech detected while agent speaking; interrupting agent audio")
-                    
-                    latency_ms = int((ts_user_speech - ts_agent_speaking) * 1000)
-                    
-                    interrupted = False
-                    
-                    if hasattr(session, "cancel_response"):
-                        try:
-                            logger.info(f"[BARGE_IN] interrupt_attempt method=cancel_response")
-                            session.cancel_response()
-                            interrupted = True
-                            logger.info(f"[BARGE_IN] interrupt_success method=cancel_response elapsed_ms={latency_ms}")
-                        except Exception as e:
-                            logger.debug(f"[BARGE_IN] cancel_response failed: {e}")
-                            
-                    if not interrupted and hasattr(session, "interrupt"):
-                        try:
-                            logger.info(f"[BARGE_IN] interrupt_attempt method=interrupt")
-                            session.interrupt()
-                            interrupted = True
-                            logger.info(f"[BARGE_IN] interrupt_success method=interrupt elapsed_ms={latency_ms}")
-                        except Exception as e:
-                            logger.debug(f"[BARGE_IN] interrupt failed: {e}")
-                            
-                    if not interrupted:
-                        logger.info("[BARGE_IN] interrupt_failed no_supported_method")
+
+                logger.info(f"[BARGE_IN] user_speech_started agent_speaking={is_speaking} state={state} call_ending={call_ending} ts={ts_user_speech}")
+
+                if is_speaking or "speak" in state or "think" in state or "generat" in state or recently_spoke:
+                    logger.info("[BARGE_IN] user speech detected while agent speaking; interrupting")
+                    _attempt_barge_in(ts_user_speech)
             except Exception as e:
-                logger.debug(f"Error checking barge-in state: {e}")
+                logger.debug(f"[BARGE_IN] user_speech_started handler error: {e}")
 
             agent_tts = agent_params.get("tts")
             if agent_tts and "upliftai" in str(type(agent_tts)).lower():
@@ -5811,14 +5813,32 @@ The opening message has already been delivered to the user automatically by the 
 
         @session.on("user_state_changed")
         def on_user_state(event):
-            """Track when user stops speaking for STT latency measurement."""
+            """Track user state transitions. Also fires barge-in when user starts speaking."""
             try:
                 old_state = getattr(event, 'old_state', None)
                 new_state = getattr(event, 'new_state', None)
-                logger.debug(f"User state changed: {old_state} -> {new_state}")
-                old_str = str(old_state).lower() if old_state else ""
-                new_str = str(new_state).lower() if new_state else ""
-                if "speaking" in old_str and "listening" in new_str:
+                
+                # Defensive normalization: handles strings, enums, and SDK state objects
+                old_str = str(getattr(old_state, "value", old_state)).lower() if old_state else ""
+                new_str = str(getattr(new_state, "value", new_state)).lower() if new_state else ""
+                
+                logger.debug(f"User state changed: {old_str} -> {new_str}")
+
+                # User just started speaking — primary barge-in trigger
+                if "speaking" in new_str and "speaking" not in old_str:
+                    ts_user_speech = time.time()
+                    is_speaking = getattr(session, "_agent_speaking", False)
+                    ts_agent_stopped = getattr(session, "_ts_agent_stopped_speaking", 0)
+                    recently_spoke = not is_speaking and (ts_user_speech - ts_agent_stopped < 0.8)
+
+                    logger.info(f"[BARGE_IN] user_speech_started agent_speaking={is_speaking} state={new_str} ts={ts_user_speech}")
+
+                    if is_speaking or recently_spoke:
+                        logger.info("[BARGE_IN] user_state_changed speaking detected while agent active; interrupting")
+                        _attempt_barge_in(ts_user_speech)
+
+                # User stopped speaking — STT latency measurement
+                if "speaking" in old_str and "speaking" not in new_str:
                     if call_tracker:
                         call_tracker.on_user_stopped_speaking()
             except Exception as e:

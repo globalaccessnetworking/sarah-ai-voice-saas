@@ -128,6 +128,11 @@ export async function POST(
                 sip_trunk_id: trunk.id,
                 caller_id: callerId
             });
+            console.log("[CampaignStart] tts_config", {
+                provider: agent.ttsProvider,
+                model: agent.ttsModel,
+                voice_id: agent.ttsVoiceId
+            });
 
             await enqueueRedisJob(queueName, payload);
             
