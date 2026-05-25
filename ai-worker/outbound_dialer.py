@@ -122,6 +122,63 @@ class OutboundDialer:
             
         metadata = json.dumps(metadata_obj, ensure_ascii=False)
 
+        # PREWARM GREETING CACHE
+        greeting_mode = os.getenv("OUTBOUND_GREETING_MODE", "session_say").strip().lower()
+        if greeting_mode == "cached_pcm" and opening_message:
+            try:
+                import hashlib
+                import time
+                import wave
+                from pathlib import Path
+                from run_agents import get_tts
+                from app.services.personalization import render_template
+                
+                # Combine payload and lead_data
+                lead_data = payload.get("lead_data") or {}
+                combined_data = { **payload, **lead_data }
+                
+                fast_greeting = render_template(opening_message, combined_data)
+                tts_provider = agent_config.get('tts_config', {}).get('provider', 'N/A')
+                tts_model = agent_config.get('tts_config', {}).get('model', 'N/A')
+                tts_voice = agent_config.get('tts_config', {}).get('voice_id', 'N/A')
+                
+                hash_str = f"{fast_greeting}_{tts_provider}_{tts_model}_{tts_voice}"
+                cache_key = hashlib.sha256(hash_str.encode()).hexdigest()[:16]
+                cache_file = Path("/tmp/ai_greetings") / f"{cache_key}.wav"
+                
+                logger.info(f"[GREETING_PREWARM] start cache_key={cache_key}")
+                
+                if cache_file.exists():
+                    logger.info(f"[GREETING_PREWARM] cache_hit=true path={cache_file}")
+                else:
+                    logger.info(f"[GREETING_PREWARM] cache_hit=false; synthesizing...")
+                    ts_cache_start = time.time()
+                    greeting_tts = get_tts(agent_config)
+                    if greeting_tts:
+                        raw_pcm = bytearray()
+                        sample_rate = 16000
+                        num_channels = 1
+                        
+                        async for audio_event in greeting_tts.synthesize(fast_greeting):
+                            if audio_event.frame:
+                                sample_rate = audio_event.frame.sample_rate
+                                num_channels = audio_event.frame.num_channels
+                                raw_pcm.extend(audio_event.frame.data)
+                                
+                        cache_file.parent.mkdir(parents=True, exist_ok=True)
+                        with wave.open(str(cache_file), 'wb') as wav:
+                            wav.setnchannels(num_channels)
+                            wav.setsampwidth(2)
+                            wav.setframerate(sample_rate)
+                            wav.writeframes(raw_pcm)
+                            
+                        duration_ms = int((len(raw_pcm) / (sample_rate * num_channels * 2)) * 1000)
+                        logger.info(f"[GREETING_PREWARM] ready path={cache_file} duration_ms={duration_ms} cache_synthesis_ms={int((time.time() - ts_cache_start)*1000)}")
+                    else:
+                        logger.warning(f"[GREETING_PREWARM] failed reason=get_tts_returned_none")
+            except Exception as prewarm_err:
+                logger.error(f"[GREETING_PREWARM] failed reason={prewarm_err}")
+
         try:
             # Step 1: Create SIP Participant
             request = api.CreateSIPParticipantRequest(

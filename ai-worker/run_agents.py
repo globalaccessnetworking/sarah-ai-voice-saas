@@ -238,31 +238,7 @@ async def get_http_session() -> aiohttp.ClientSession:
         _shared_http_session = aiohttp.ClientSession()
     return _shared_http_session
 
-def normalize_dict(value):
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        value = value.strip()
-        if not value:
-            return {}
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {}
-    return {}
-
-def render_template(text, data):
-    if not text or not isinstance(text, str):
-        return text
-    c_name = data.get("contact_name") or data.get("lead_name") or data.get("caller_name") or "there"
-    c_company = data.get("company") or data.get("business_name") or ""
-    text = text.replace("{{name}}", c_name).replace("{name}", c_name).replace("{{contact_name}}", c_name).replace("{{lead_name}}", c_name)
-    if c_company:
-        text = text.replace("{{company}}", c_company).replace("{{business_name}}", c_company)
-    else:
-        text = text.replace("{{company}}", "").replace("{{business_name}}", "")
-    return text
+from app.services.personalization import render_template, build_lead_context, normalize_lead_data
 
 # Import LiveKit components
 try:
@@ -4183,16 +4159,18 @@ Your goal is to collect: **Issue, District, Address, Landmark, and Name/Phone**.
 
     # Phase 6: Outbound Lead Context Injection
     # Injects metadata passed from dispatcher.py (api.CreateSIPParticipant)
-    if caller_data.get("outbound") or "lead_name" in caller_data:
-        lead_name = caller_data.get("lead_name", "the customer")
-        custom_info = caller_data.get("custom_data", "")
-        lead_context = f"\n\n## Outbound Lead Context\n- You are calling: {lead_name}"
-        if custom_info:
-            lead_context += f"\n- Additional Lead Data: {custom_info}"
-        lead_context += "\n- Conversation Goal: Initiate the outbound campaign message and handle the response naturally."
+    if caller_data.get("outbound") or "lead_name" in caller_data or "lead_data" in caller_data:
+        lead_name = caller_data.get("lead_name") or caller_data.get("contact_name") or "the customer"
+        lead_context_prompt = f"\n\n## Outbound Lead Context\n- You are calling: {lead_name}\n- Conversation Goal: Initiate the outbound campaign message and handle the response naturally."
+        final_instructions_parts.append(lead_context_prompt)
         
-        final_instructions_parts.append(lead_context)
-        logger.info(f"Injected Lead Context for {lead_name}")
+        # Inject dynamic lead_data
+        lead_data_payload = caller_data.get("lead_data") or caller_data
+        if lead_data_payload:
+            injected_lead_context = build_lead_context(lead_data_payload)
+            if injected_lead_context:
+                final_instructions_parts.append(injected_lead_context)
+                logger.info(f"Injected dynamic Lead Context for {lead_name}")
     
     # Add knowledge base if provided
     if knowledge_base:
@@ -5157,27 +5135,33 @@ The opening message has already been delivered to the user automatically by the 
                 elif call_tracker and call_tracker.job_metadata:
                     jm = normalize_dict(call_tracker.job_metadata)
     
-                jm_config = normalize_dict(jm.get("config", {}))
+                jm_config = jm.get("config", {}) if isinstance(jm.get("config"), dict) else {}
                 
                 logger.info(f"[GREETING] metadata_type job_metadata={type(jm).__name__} normalized_keys={list(jm.keys())}")
     
-                for src, val in [
-                    ("job_metadata.opening_message", jm.get("opening_message")),
-                    ("job_metadata.openingMessage", jm.get("openingMessage")),
-                    ("job_metadata.outboundGreetingText", jm.get("outboundGreetingText")),
-                    ("job_metadata.config.opening_message", jm_config.get("opening_message")),
-                    ("job_metadata.config.openingMessage", jm_config.get("openingMessage")),
-                    ("job_metadata.config.outboundGreetingText", jm_config.get("outboundGreetingText")),
-                    ("agent_config.initial_greeting", initial_greeting),
-                ]:
-                    if val and isinstance(val, str) and val.strip():
-                        resolved_greeting = val.strip()
-                        resolved_source = src
-                        break
-                        
+                metadata_source = jm.get("source") or jm.get("type")
+                
+                if metadata_source == "vicidial":
+                    src = "vicidial_mapping.opening_message"
+                    val = jm.get("vicidial_mapping", {}).get("opening_message")
+                elif metadata_source == "inbound":
+                    src = "inbound_route.greeting"
+                    val = jm.get("inbound_route", {}).get("greeting")
+                elif metadata_source in ["ai_native_campaign", "outbound_campaign_call", "preview", "manual"]:
+                    src = f"{metadata_source}.opening_message"
+                    val = jm.get("opening_message") or jm_config.get("opening_message")
+                else:
+                    src = "job_metadata.opening_message"
+                    val = jm.get("opening_message") or jm_config.get("opening_message")
+                
+                if val and isinstance(val, str) and val.strip():
+                    resolved_greeting = val.strip()
+                    resolved_source = src
+                    
                 if resolved_greeting:
                     # Replace variables safely
-                    initial_greeting = render_template(resolved_greeting, caller_data)
+                    combined_data = {**caller_data, **(jm.get("lead_data") or {})}
+                    initial_greeting = render_template(resolved_greeting, combined_data)
                     trunc_text = initial_greeting[:160] + "..." if len(initial_greeting) > 160 else initial_greeting
                     logger.info(f"[GREETING] resolved_source={resolved_source}")
                     logger.info(f"[GREETING] resolved_text={trunc_text}")
@@ -5186,7 +5170,12 @@ The opening message has already been delivered to the user automatically by the 
                 resolved_greeting = None
 
         if not resolved_greeting and is_outbound_call_context:
-            initial_greeting = agent_config.get("initial_greeting") or "Hello, this is your AI assistant."
+            initial_greeting = agent_config.get("fallback_greeting") or agent_config.get("initial_greeting")
+            resolved_source = "agent.fallback_greeting"
+            if not initial_greeting:
+                initial_greeting = "Hello, this is your AI assistant."
+                resolved_source = "generic_fallback"
+            logger.info(f"[GREETING] fallback resolved_source={resolved_source}")
 
         if is_telephony_agent and (initial_greeting or greeting_audio_url):
             # Extract basic SIP metadata for greeting variables ({{user_number}})
@@ -5486,29 +5475,46 @@ The opening message has already been delivered to the user automatically by the 
             """
             # Barge-in tracking
             try:
+                import time
                 is_speaking = getattr(session, "_agent_speaking", False)
-                if is_speaking:
+                call_ending = getattr(session, "_call_ending", False)
+                
+                # Try to safely get the string value of the state enum
+                state_val = getattr(session, "state", None)
+                state = str(state_val.value) if hasattr(state_val, "value") else str(state_val)
+                
+                ts_user_speech = time.time()
+                ts_agent_speaking = getattr(session, "_ts_agent_speaking", ts_user_speech)
+                
+                logger.info(f"[BARGE_IN] user_speech_started agent_speaking={is_speaking} state={state} call_ending={call_ending}")
+                
+                if is_speaking or state in ["speaking", "thinking", "generating"] or "speak" in state.lower():
                     logger.info("[BARGE_IN] user speech detected while agent speaking; interrupting agent audio")
+                    
+                    latency_ms = int((ts_user_speech - ts_agent_speaking) * 1000)
+                    
                     interrupted = False
                     
                     if hasattr(session, "cancel_response"):
                         try:
+                            logger.info(f"[BARGE_IN] interrupt_attempt method=cancel_response")
                             session.cancel_response()
                             interrupted = True
-                            logger.info("[BARGE_IN] interrupt_success method=cancel_response")
+                            logger.info(f"[BARGE_IN] interrupt_success method=cancel_response elapsed_ms={latency_ms}")
                         except Exception as e:
                             logger.debug(f"[BARGE_IN] cancel_response failed: {e}")
                             
                     if not interrupted and hasattr(session, "interrupt"):
                         try:
+                            logger.info(f"[BARGE_IN] interrupt_attempt method=interrupt")
                             session.interrupt()
                             interrupted = True
-                            logger.info("[BARGE_IN] interrupt_success method=interrupt")
+                            logger.info(f"[BARGE_IN] interrupt_success method=interrupt elapsed_ms={latency_ms}")
                         except Exception as e:
                             logger.debug(f"[BARGE_IN] interrupt failed: {e}")
                             
                     if not interrupted:
-                        logger.info("[BARGE_IN] interrupt requested but no supported interrupt handle found")
+                        logger.info("[BARGE_IN] interrupt_failed no_supported_method")
             except Exception as e:
                 logger.debug(f"Error checking barge-in state: {e}")
 

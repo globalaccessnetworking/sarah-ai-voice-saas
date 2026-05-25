@@ -98,7 +98,9 @@ export async function POST(
                 lead_id: number.id,
                 external_record_id: number.id,
                 contact_name: number.name || "Customer",
+                company_name: number.companyName || "",
                 phone: number.phone,
+                lead_data: number.leadData || null,
                 sip_call_to: sipCallTo,
                 agent_id: agent.id,
                 agent_slug: agent.slug,
@@ -107,6 +109,7 @@ export async function POST(
                 caller_id: callerId,
                 opening_message: campaign.openingMessage,
                 call_goal: campaign.callGoal || `Campaign Outbound Call - ${campaign.name}`,
+                script: campaign.script,
                 legacy_complaint_mode: false
             };
 

@@ -558,7 +558,7 @@ function IdentityTab({ form, setForm }: { form: AgentFormState; setForm: (f: Age
                 </FormField>
             </div>
 
-            <FormField label="Initial Greeting" hint="What the agent says when answering a call. Leave empty for no automatic greeting.">
+            <FormField label="Fallback Greeting" hint="Used when no campaign, ViciDial mapping, preview session, or inbound route greeting is configured.">
                 <textarea
                     style={{ ...INPUT_STYLE, resize: "vertical" }}
                     rows={3}
@@ -568,7 +568,7 @@ function IdentityTab({ form, setForm }: { form: AgentFormState; setForm: (f: Age
                 />
             </FormField>
 
-            <FormField label="Initial Greeting Recording (WAV ONLY)" hint="Upload a professional recording to bypass AI greeting latency.">
+            <FormField label="Fallback Greeting Recording (WAV ONLY)" hint="Upload a professional recording to bypass AI greeting latency.">
                 <div style={{
                     display: "flex",
                     alignItems: "center",

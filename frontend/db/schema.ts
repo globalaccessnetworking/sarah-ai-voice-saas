@@ -430,7 +430,26 @@ export const campaignNumbers = pgTable("campaign_numbers", {
     name: varchar("name", { length: 255 }),
     companyName: varchar("company_name", { length: 255 }),
     status: varchar("status", { length: 50 }).default("pending"),
+    leadData: jsonb("lead_data"),
     calledAt: timestamp("called_at", { withTimezone: true })
+});
+
+// --- ViciDial Mapping ---
+export const vicidialMappings = pgTable("vicidial_mappings", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: varchar("name", { length: 255 }).notNull(),
+    vicidialCampaignId: varchar("vicidial_campaign_id", { length: 100 }),
+    vicidialListId: varchar("vicidial_list_id", { length: 100 }),
+    vicidialIngroup: varchar("vicidial_ingroup", { length: 100 }),
+    agentId: text("agent_id").references(() => agents.id, { onDelete: 'set null' }),
+    openingMessage: text("opening_message"),
+    callGoal: text("call_goal"),
+    script: text("script"),
+    leadFieldMapping: jsonb("lead_field_mapping"),
+    dispositionMapping: jsonb("disposition_mapping"),
+    isActive: boolean("is_active").default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
 // ── Users & Audit Logs (Phase 15.5) ─────────────────────────────────────────

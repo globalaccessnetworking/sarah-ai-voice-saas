@@ -63,7 +63,8 @@ export async function POST(request: Request) {
                 phone: n.phone,
                 name: n.name || null,
                 companyName: n.companyName || null,
-                status: 'pending'
+                status: 'pending',
+                leadData: n.leadData || null
             }));
 
             await db.insert(campaignNumbers).values(numbersData);

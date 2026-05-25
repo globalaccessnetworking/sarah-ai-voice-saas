@@ -171,11 +171,18 @@ export default function CreateCampaignPage() {
                     results.data.forEach((row: any) => {
                         const phone = row.phone || row.Phone || row.PHONE || row.phoneNumber || row['Phone Number'];
                         if (phone) {
+                            const name = row.name || row.Name || row.NAME || "";
+                            const companyName = row.company || row.Company || row.companyName || "";
+                            const email = row.email || row.Email || "";
+                            
+                            const leadData = { ...row };
+                            
                             newNumbers.push({
                                 phone: String(phone).trim(),
-                                name: row.name || row.Name || row.NAME || "",
-                                companyName: row.company || row.Company || row.companyName || "",
-                                email: row.email || row.Email || ""
+                                name,
+                                companyName,
+                                email,
+                                leadData
                             });
                         }
                     });
