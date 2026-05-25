@@ -266,7 +266,13 @@ class OutboundDialer:
                             logger.info(f"[GREETING_PREWARM] ready path={cache_file} duration_ms={duration_ms} cache_synthesis_ms={int((time.time() - ts_cache_start)*1000)}")
 
                         try:
-                            await asyncio.wait_for(build_cache_audio(), timeout=5.0)
+                            try:
+                                _prewarm_timeout = float(os.getenv("OUTBOUND_GREETING_PREWARM_TIMEOUT_SEC", "10.0"))
+                            except ValueError:
+                                logger.warning("[GREETING_PREWARM] invalid OUTBOUND_GREETING_PREWARM_TIMEOUT_SEC; using 10.0s")
+                                _prewarm_timeout = 10.0
+                            logger.info(f"[GREETING_PREWARM] synthesis_timeout={_prewarm_timeout}s")
+                            await asyncio.wait_for(build_cache_audio(), timeout=_prewarm_timeout)
                         except asyncio.TimeoutError:
                             logger.error(f"[GREETING_PREWARM] failed reason=timeout; continuing_without_cache=true")
                         except Exception as syn_e:
