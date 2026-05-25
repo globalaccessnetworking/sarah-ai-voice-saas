@@ -38,10 +38,16 @@ def legacy_prewarm(proc):
 _GREETING_CACHE = {}
 
 # Load environment variables
-worker_dir = Path(__file__).parent
-project_root = worker_dir.parent
-load_dotenv(worker_dir / ".env")
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(env_path, override=True)
 
+logger.info(f"[ENV] ai-worker .env loaded path={env_path} exists={env_path.exists()}")
+logger.info(f"[ENV] DEEPGRAM_API_KEY present={bool(os.getenv('DEEPGRAM_API_KEY'))}")
+logger.info(f"[ENV] DEEPGRAM_API_KEY length={len(os.getenv('DEEPGRAM_API_KEY') or '')}")
+logger.info(f"[ENV] OUTBOUND_GREETING_MODE={os.getenv('OUTBOUND_GREETING_MODE')}")
+
+worker_dir = Path(__file__).resolve().parent
+project_root = worker_dir.parent
 # Add current directory and project root to path
 # Force current directory (local mocks) to the very top
 sys.path.insert(0, str(Path(__file__).parent))

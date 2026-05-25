@@ -9,10 +9,15 @@ from dotenv import load_dotenv
 from livekit import api
 
 # --- Configuration & Logging ---
-load_dotenv()
+from pathlib import Path
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(env_path, override=True)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("SarahOutboundDialer")
-
+logger.info(f"[ENV] ai-worker .env loaded path={env_path} exists={env_path.exists()}")
+logger.info(f"[ENV] DEEPGRAM_API_KEY present={bool(os.getenv('DEEPGRAM_API_KEY'))}")
+logger.info(f"[ENV] DEEPGRAM_API_KEY length={len(os.getenv('DEEPGRAM_API_KEY') or '')}")
+logger.info(f"[ENV] OUTBOUND_GREETING_MODE={os.getenv('OUTBOUND_GREETING_MODE')}")
 # LiveKit Config
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
