@@ -5374,12 +5374,21 @@ The opening message has already been delivered to the user automatically by the 
                                 async def play_fast_tts_greeting():
                                     try:
                                         # CACHE FALLBACK LOGIC
+                                        from app.services.greeting_cache import resolve_effective_tts_config, get_greeting_cache_key
+                                        
                                         cache_dir = Path("/tmp/ai_greetings")
                                         cache_dir.mkdir(parents=True, exist_ok=True)
-                                        hash_str = f"{fast_greeting}_{tts_provider}_{tts_model}_{tts_voice}"
-                                        cache_key = hashlib.sha256(hash_str.encode()).hexdigest()[:16]
+                                        
+                                        # Ensure jm is available for resolve
+                                        _jm = {}
+                                        if "job_metadata" in locals() and job_metadata:
+                                            _jm = normalize_dict(job_metadata)
+                                            
+                                        eff_prov, eff_mod, eff_voice = resolve_effective_tts_config(_jm, agent_config)
+                                        cache_key = get_greeting_cache_key(fast_greeting, eff_prov, eff_mod, eff_voice)
                                         cache_file = cache_dir / f"{cache_key}.wav"
                                         
+                                        logger.info(f"[GREETING_CACHE] provider={eff_prov} model={eff_mod} voice_id={eff_voice} key={cache_key}")
                                         logger.info(f"[GREETING] cache_key={cache_key}")
                                         
                                         if not cache_file.exists():
@@ -5534,7 +5543,7 @@ The opening message has already been delivered to the user automatically by the 
     # --- PHASE 2: PREDICTIVE PRE-WARM (UPLIFTAI IGNITION) ---
     if session:
         @session.on("user_speech_started")
-        def on_user_speech(participant):
+        def on_user_speech(*args):
             """
             Triggered the instant VAD detects human speech.
             We use this to 'ignite' the TTS session in the background
@@ -5826,6 +5835,14 @@ The opening message has already been delivered to the user automatically by the 
                 if is_final and transcript:
                     setattr(session, "_ts_stt_final", time.time())
                     logger.debug(f"Final transcript received: {transcript[:50]}...")
+                    
+                    # 4. Add transcript fallback for Barge-in proof
+                    is_speaking = getattr(session, "_agent_speaking", False)
+                    ts_agent_stopped = getattr(session, "_ts_agent_stopped_speaking", 0)
+                    delta_ms = int((time.time() - ts_agent_stopped) * 1000)
+                    if is_speaking or delta_ms < 1500:
+                        logger.info(f"[BARGE_IN] transcript_overlap_detected delta_ms={delta_ms}")
+                    
                     if call_tracker:
                         call_tracker.on_stt_transcript_received(is_final=True)
                     # In realtime mode, capture user speech from the realtime model's ASR

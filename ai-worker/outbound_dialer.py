@@ -154,23 +154,8 @@ class OutboundDialer:
                 
                 fast_greeting = render_template(opening_message, combined_data)
                 
-                tts_config = payload.get("tts_config", {}) or agent_config.get("tts_config", {})
-                tts_provider = tts_config.get("provider") or payload.get("tts_provider") or agent_config.get("tts_config", {}).get("provider") or "deepgram"
-                raw_model = tts_config.get("model") or payload.get("tts_model") or agent_config.get("tts_config", {}).get("model")
-                raw_voice = tts_config.get("voice_id") or payload.get("tts_voice_id") or agent_config.get("tts_config", {}).get("voice_id")
-                
-                effective_model = raw_model
-                effective_voice = raw_voice
-                
-                if not effective_model or str(effective_model) in ("N/A", "None"):
-                    if tts_provider.lower() == "deepgram":
-                        effective_model = "aura-asteria-en"
-                
-                if not effective_voice or str(effective_voice) in ("N/A", "None"):
-                    if tts_provider.lower() == "cartesia":
-                        effective_voice = "79a125e8-cd45-4c13-8a67-188112f4dd22"
-                    elif tts_provider.lower() == "elevenlabs":
-                        effective_voice = "jBpfuIE2acCO8z3wKNLl"
+                from app.services.greeting_cache import resolve_effective_tts_config, get_greeting_cache_key
+                tts_provider, effective_model, effective_voice = resolve_effective_tts_config(payload, agent_config)
                 
                 logger.info(f"[GREETING_PREWARM] tts_config provider={tts_provider} model={effective_model} voice_id={effective_voice}")
                 
@@ -179,10 +164,10 @@ class OutboundDialer:
                 api_key_present = bool(api_key)
                 logger.info(f"[GREETING_PREWARM] api_key_present={str(api_key_present).lower()} provider={tts_provider}")
                 
-                hash_str = f"{fast_greeting}_{tts_provider}_{effective_model}_{effective_voice}"
-                cache_key = hashlib.sha256(hash_str.encode()).hexdigest()[:16]
+                cache_key = get_greeting_cache_key(fast_greeting, tts_provider, effective_model, effective_voice)
                 cache_file = Path("/tmp/ai_greetings") / f"{cache_key}.wav"
                 
+                logger.info(f"[GREETING_CACHE] provider={tts_provider} model={effective_model} voice_id={effective_voice} key={cache_key}")
                 logger.info(f"[GREETING_PREWARM] start cache_key={cache_key}")
                 
                 if cache_file.exists():
