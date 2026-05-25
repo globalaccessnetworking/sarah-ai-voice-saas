@@ -4171,6 +4171,9 @@ Your goal is to collect: **Issue, District, Address, Landmark, and Name/Phone**.
             if injected_lead_context:
                 final_instructions_parts.append(injected_lead_context)
                 logger.info(f"Injected dynamic Lead Context for {lead_name}")
+                
+    # Appointment Hallucination Guard
+    final_instructions_parts.append("## Scheduling Limitations\nIf scheduling tools are not enabled, collect the user's preferred date/time and say the team will confirm it. Do not claim the appointment is booked.")
     
     # Add knowledge base if provided
     if knowledge_base:
@@ -5071,6 +5074,20 @@ The opening message has already been delivered to the user automatically by the 
                         citizen = p
                         break
                 target = citizen or (next(iter(ctx.room.remote_participants.values())) if ctx.room.remote_participants else None)
+                
+                # Check for Barge-In overlap fallback
+                try:
+                    import time
+                    ts_now = time.time()
+                    ts_agent_stopped = getattr(session, "_ts_agent_stopped_speaking", 0)
+                    is_speaking = getattr(session, "_agent_speaking", False)
+                    delta_ms = int((ts_now - ts_agent_stopped) * 1000)
+                    
+                    if is_speaking or delta_ms < 1500:
+                        logger.info(f"[BARGE_IN] transcript_overlap_detected delta_ms={delta_ms} agent_speaking={is_speaking}")
+                except Exception as e:
+                    logger.debug(f"Error checking transcript overlap: {e}")
+                    
                 if target:
                     asyncio.create_task(handle_translation(text, target, "user"))
             elif role in ["assistant", "agent"]:
@@ -5159,10 +5176,26 @@ The opening message has already been delivered to the user automatically by the 
                     resolved_source = src
                     
                 if resolved_greeting:
+                    # Merge template data in priority order
+                    template_data = {}
+                    # Base: caller_data (already has participant metadata, room metadata)
+                    template_data.update(caller_data)
+                    # Next: job metadata root
+                    template_data.update(jm)
+                    # Highest priority for explicitly injected lead_data
+                    lead_data_payload = jm.get("lead_data") or caller_data.get("lead_data") or {}
+                    for k, v in lead_data_payload.items():
+                        if v is not None and str(v).strip():
+                            existing = template_data.get(k)
+                            if existing is None or not str(existing).strip():
+                                template_data[k] = v
+                            
+                    logger.info(f"[PERSONALIZATION] lead_data_keys={list(lead_data_payload.keys())}")
+                    logger.info(f"[PERSONALIZATION] template_keys={list(template_data.keys())}")
+                    
                     # Replace variables safely
-                    combined_data = {**caller_data, **(jm.get("lead_data") or {})}
-                    initial_greeting = render_template(resolved_greeting, combined_data)
-                    trunc_text = initial_greeting[:160] + "..." if len(initial_greeting) > 160 else initial_greeting
+                    initial_greeting = render_template(resolved_greeting, template_data)
+                    trunc_text = initial_greeting[:220] + "..." if len(initial_greeting) > 220 else initial_greeting
                     logger.info(f"[GREETING] resolved_source={resolved_source}")
                     logger.info(f"[GREETING] resolved_text={trunc_text}")
             except Exception as e:
@@ -5485,10 +5518,13 @@ The opening message has already been delivered to the user automatically by the 
                 
                 ts_user_speech = time.time()
                 ts_agent_speaking = getattr(session, "_ts_agent_speaking", ts_user_speech)
+                ts_agent_stopped = getattr(session, "_ts_agent_stopped_speaking", 0)
                 
-                logger.info(f"[BARGE_IN] user_speech_started agent_speaking={is_speaking} state={state} call_ending={call_ending}")
+                logger.info(f"[BARGE_IN] user_speech_started agent_speaking={is_speaking} state={state} call_ending={call_ending} ts={ts_user_speech}")
                 
-                if is_speaking or state in ["speaking", "thinking", "generating"] or "speak" in state.lower():
+                recently_spoke = not is_speaking and (ts_user_speech - ts_agent_stopped < 0.8)
+                
+                if is_speaking or state in ["speaking", "thinking", "generating"] or "speak" in state.lower() or recently_spoke:
                     logger.info("[BARGE_IN] user speech detected while agent speaking; interrupting agent audio")
                     
                     latency_ms = int((ts_user_speech - ts_agent_speaking) * 1000)
@@ -5715,6 +5751,7 @@ The opening message has already been delivered to the user automatically by the 
                         call_tracker.on_agent_speech_started()
                 else:
                     setattr(session, "_agent_speaking", False)
+                    setattr(session, "_ts_agent_stopped_speaking", time.time())
                     logger.info(f"[BARGE_IN] agent_speaking=false state={state}")
             except Exception as e:
                 logger.debug(f"Error handling agent state change: {e}")

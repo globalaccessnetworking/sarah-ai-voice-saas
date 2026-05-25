@@ -115,6 +115,16 @@ class OutboundDialer:
             "config": agent_config
         }
         
+        # Inject full lead_data and dynamic fields to ensure personalization at runtime
+        lead_data_src = payload.get("lead_data") or {}
+        if lead_data_src:
+            metadata_obj["lead_data"] = lead_data_src
+            for key in ["company_name", "business_nature", "pain_point", "designation", "industry", "website", "gmb_reviews", "number_of_employees"]:
+                if key in lead_data_src:
+                    metadata_obj[key] = lead_data_src[key]
+        elif "company_name" in payload:
+            metadata_obj["company_name"] = payload.get("company_name")
+        
         if legacy_mode:
             metadata_obj["citizen_name"] = contact_name
             metadata_obj["issue_type"] = call_goal
@@ -153,11 +163,41 @@ class OutboundDialer:
                 else:
                     logger.info(f"[GREETING_PREWARM] cache_hit=false; synthesizing...")
                     ts_cache_start = time.time()
-                    greeting_tts = get_tts(agent_config)
+                    
+                    greeting_tts = None
+                    try:
+                        from app.services.config_service import get_api_key
+                        if tts_provider.lower() == "deepgram":
+                            import livekit.plugins.deepgram
+                            api_key = get_api_key("deepgram")
+                            dg_model = tts_model if tts_model and tts_model != "N/A" else "aura-asteria-en"
+                            greeting_tts = livekit.plugins.deepgram.TTS(model=dg_model, api_key=api_key)
+                        elif tts_provider.lower() == "cartesia":
+                            import livekit.plugins.cartesia
+                            api_key = get_api_key("cartesia")
+                            cartesia_voice = tts_voice if tts_voice and tts_voice != "N/A" else "79a125e8-cd45-4c13-8a67-188112f4dd22"
+                            greeting_tts = livekit.plugins.cartesia.TTS(voice=cartesia_voice, api_key=api_key)
+                        elif tts_provider.lower() == "elevenlabs":
+                            import livekit.plugins.elevenlabs
+                            api_key = get_api_key("elevenlabs")
+                            eleven_voice = tts_voice if tts_voice and tts_voice != "N/A" else "jBpfuIE2acCO8z3wKNLl"
+                            greeting_tts = livekit.plugins.elevenlabs.TTS(voice=eleven_voice, api_key=api_key)
+                        else:
+                            greeting_tts = get_tts(agent_config)
+                        
+                        if greeting_tts:
+                            logger.info(f"[GREETING_PREWARM] tts_ready provider={tts_provider} model={tts_model}")
+                        else:
+                            logger.warning(f"[GREETING_PREWARM] failed reason=get_tts_returned_none")
+                    except Exception as e:
+                        logger.error(f"[GREETING_PREWARM] tts_init_failed provider={tts_provider} model={tts_model} reason={str(e)}")
+                        
                     if greeting_tts:
                         raw_pcm = bytearray()
                         sample_rate = 16000
                         num_channels = 1
+                        
+                        logger.info(f"[GREETING_PREWARM] rendered_text={fast_greeting[:220]}")
                         
                         async for audio_event in greeting_tts.synthesize(fast_greeting):
                             if audio_event.frame:
@@ -174,8 +214,6 @@ class OutboundDialer:
                             
                         duration_ms = int((len(raw_pcm) / (sample_rate * num_channels * 2)) * 1000)
                         logger.info(f"[GREETING_PREWARM] ready path={cache_file} duration_ms={duration_ms} cache_synthesis_ms={int((time.time() - ts_cache_start)*1000)}")
-                    else:
-                        logger.warning(f"[GREETING_PREWARM] failed reason=get_tts_returned_none")
             except Exception as prewarm_err:
                 logger.error(f"[GREETING_PREWARM] failed reason={prewarm_err}")
 
