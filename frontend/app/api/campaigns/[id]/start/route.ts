@@ -110,6 +110,11 @@ export async function POST(
                 opening_message: campaign.openingMessage,
                 call_goal: campaign.callGoal || `Campaign Outbound Call - ${campaign.name}`,
                 script: campaign.script,
+                tts_config: {
+                    provider: agent.ttsProvider,
+                    model: agent.ttsModel,
+                    voice_id: agent.ttsVoiceId
+                },
                 legacy_complaint_mode: false
             };
 

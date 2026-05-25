@@ -151,12 +151,30 @@ class OutboundDialer:
                 
                 tts_config = payload.get("tts_config", {}) or agent_config.get("tts_config", {})
                 tts_provider = tts_config.get("provider") or payload.get("tts_provider") or agent_config.get("tts_config", {}).get("provider") or "deepgram"
-                tts_model = tts_config.get("model") or payload.get("tts_model") or agent_config.get("tts_config", {}).get("model")
-                tts_voice = tts_config.get("voice_id") or payload.get("tts_voice_id") or agent_config.get("tts_config", {}).get("voice_id")
+                raw_model = tts_config.get("model") or payload.get("tts_model") or agent_config.get("tts_config", {}).get("model")
+                raw_voice = tts_config.get("voice_id") or payload.get("tts_voice_id") or agent_config.get("tts_config", {}).get("voice_id")
                 
-                logger.info(f"[GREETING_PREWARM] tts_config provider={tts_provider} model={tts_model} voice_id={tts_voice}")
+                effective_model = raw_model
+                effective_voice = raw_voice
                 
-                hash_str = f"{fast_greeting}_{tts_provider}_{tts_model}_{tts_voice}"
+                if not effective_model or str(effective_model) in ("N/A", "None"):
+                    if tts_provider.lower() == "deepgram":
+                        effective_model = "aura-asteria-en"
+                
+                if not effective_voice or str(effective_voice) in ("N/A", "None"):
+                    if tts_provider.lower() == "cartesia":
+                        effective_voice = "79a125e8-cd45-4c13-8a67-188112f4dd22"
+                    elif tts_provider.lower() == "elevenlabs":
+                        effective_voice = "jBpfuIE2acCO8z3wKNLl"
+                
+                logger.info(f"[GREETING_PREWARM] tts_config provider={tts_provider} model={effective_model} voice_id={effective_voice}")
+                
+                from app.services.config_service import config_service
+                api_key = config_service.get_api_key(tts_provider.lower()) or os.getenv(f"{tts_provider.upper()}_API_KEY")
+                api_key_present = bool(api_key)
+                logger.info(f"[GREETING_PREWARM] api_key_present={str(api_key_present).lower()} provider={tts_provider}")
+                
+                hash_str = f"{fast_greeting}_{tts_provider}_{effective_model}_{effective_voice}"
                 cache_key = hashlib.sha256(hash_str.encode()).hexdigest()[:16]
                 cache_file = Path("/tmp/ai_greetings") / f"{cache_key}.wav"
                 
@@ -168,56 +186,59 @@ class OutboundDialer:
                     logger.info(f"[GREETING_PREWARM] cache_hit=false; synthesizing...")
                     ts_cache_start = time.time()
                     
-                    greeting_tts = None
-                    try:
-                        from app.services.config_service import config_service
-                        if tts_provider.lower() == "deepgram":
-                            import livekit.plugins.deepgram
-                            api_key = config_service.get_api_key("deepgram") or os.getenv("DEEPGRAM_API_KEY")
-                            dg_model = tts_model if tts_model and tts_model != "N/A" else "aura-asteria-en"
-                            greeting_tts = livekit.plugins.deepgram.TTS(model=dg_model, api_key=api_key)
-                        elif tts_provider.lower() == "cartesia":
-                            import livekit.plugins.cartesia
-                            api_key = config_service.get_api_key("cartesia") or os.getenv("CARTESIA_API_KEY")
-                            cartesia_voice = tts_voice if tts_voice and tts_voice != "N/A" else "79a125e8-cd45-4c13-8a67-188112f4dd22"
-                            greeting_tts = livekit.plugins.cartesia.TTS(voice=cartesia_voice, api_key=api_key)
-                        elif tts_provider.lower() == "elevenlabs":
-                            import livekit.plugins.elevenlabs
-                            api_key = config_service.get_api_key("elevenlabs") or os.getenv("ELEVEN_LABS_API_KEY")
-                            eleven_voice = tts_voice if tts_voice and tts_voice != "N/A" else "jBpfuIE2acCO8z3wKNLl"
-                            greeting_tts = livekit.plugins.elevenlabs.TTS(voice=eleven_voice, api_key=api_key)
-                        else:
-                            greeting_tts = get_tts(agent_config)
-                        
-                        if greeting_tts:
-                            logger.info(f"[GREETING_PREWARM] tts_ready provider={tts_provider} model={tts_model}")
-                        else:
-                            logger.warning(f"[GREETING_PREWARM] failed reason=get_tts_returned_none")
-                    except Exception as e:
-                        logger.error(f"[GREETING_PREWARM] tts_init_failed provider={tts_provider} model={tts_model} reason={str(e)}")
-                        
-                    if greeting_tts:
-                        raw_pcm = bytearray()
-                        sample_rate = 16000
-                        num_channels = 1
-                        
-                        logger.info(f"[GREETING_PREWARM] rendered_text={fast_greeting[:220]}")
-                        
-                        async for audio_event in greeting_tts.synthesize(fast_greeting):
-                            if audio_event.frame:
-                                sample_rate = audio_event.frame.sample_rate
-                                num_channels = audio_event.frame.num_channels
-                                raw_pcm.extend(audio_event.frame.data)
-                                
-                        cache_file.parent.mkdir(parents=True, exist_ok=True)
-                        with wave.open(str(cache_file), 'wb') as wav:
-                            wav.setnchannels(num_channels)
-                            wav.setsampwidth(2)
-                            wav.setframerate(sample_rate)
-                            wav.writeframes(raw_pcm)
+                    if not api_key_present and tts_provider.lower() == "deepgram":
+                        logger.error("[GREETING_PREWARM] failed reason=deepgram_api_key_missing; continuing_without_cache=true")
+                    else:
+                        greeting_tts = None
+                        try:
+                            if tts_provider.lower() == "deepgram":
+                                import livekit.plugins.deepgram
+                                greeting_tts = livekit.plugins.deepgram.TTS(model=effective_model, api_key=api_key)
+                            elif tts_provider.lower() == "cartesia":
+                                import livekit.plugins.cartesia
+                                greeting_tts = livekit.plugins.cartesia.TTS(voice=effective_voice, api_key=api_key)
+                            elif tts_provider.lower() == "elevenlabs":
+                                import livekit.plugins.elevenlabs
+                                greeting_tts = livekit.plugins.elevenlabs.TTS(voice=effective_voice, api_key=api_key)
+                            else:
+                                greeting_tts = get_tts(agent_config)
                             
-                        duration_ms = int((len(raw_pcm) / (sample_rate * num_channels * 2)) * 1000)
-                        logger.info(f"[GREETING_PREWARM] ready path={cache_file} duration_ms={duration_ms} cache_synthesis_ms={int((time.time() - ts_cache_start)*1000)}")
+                            if greeting_tts:
+                                logger.info(f"[GREETING_PREWARM] tts_ready provider={tts_provider} model={effective_model}")
+                            else:
+                                logger.warning(f"[GREETING_PREWARM] failed reason=get_tts_returned_none; continuing_without_cache=true")
+                        except Exception as e:
+                            logger.error(f"[GREETING_PREWARM] tts_init_failed provider={tts_provider} model={effective_model} reason={str(e)}; continuing_without_cache=true")
+                            
+                        if greeting_tts:
+                            logger.info(f"[GREETING_PREWARM] rendered_text={fast_greeting[:220]}")
+                            
+                            async def build_cache_audio():
+                                raw_pcm = bytearray()
+                                sample_rate = 16000
+                                num_channels = 1
+                                async for audio_event in greeting_tts.synthesize(fast_greeting):
+                                    if audio_event.frame:
+                                        sample_rate = audio_event.frame.sample_rate
+                                        num_channels = audio_event.frame.num_channels
+                                        raw_pcm.extend(audio_event.frame.data)
+                                        
+                                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                                with wave.open(str(cache_file), 'wb') as wav:
+                                    wav.setnchannels(num_channels)
+                                    wav.setsampwidth(2)
+                                    wav.setframerate(sample_rate)
+                                    wav.writeframes(raw_pcm)
+                                    
+                                duration_ms = int((len(raw_pcm) / (sample_rate * num_channels * 2)) * 1000)
+                                logger.info(f"[GREETING_PREWARM] ready path={cache_file} duration_ms={duration_ms} cache_synthesis_ms={int((time.time() - ts_cache_start)*1000)}")
+
+                            try:
+                                await asyncio.wait_for(build_cache_audio(), timeout=1.2)
+                            except asyncio.TimeoutError:
+                                logger.error(f"[GREETING_PREWARM] failed reason=timeout; continuing_without_cache=true")
+                            except Exception as syn_e:
+                                logger.error(f"[GREETING_PREWARM] failed reason={syn_e}; continuing_without_cache=true")
             except Exception as prewarm_err:
                 logger.error(f"[GREETING_PREWARM] failed reason={prewarm_err}")
 
