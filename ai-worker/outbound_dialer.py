@@ -194,56 +194,69 @@ class OutboundDialer:
                     if not api_key_present and tts_provider.lower() == "deepgram":
                         logger.error("[GREETING_PREWARM] failed reason=deepgram_api_key_missing; continuing_without_cache=true")
                     else:
-                        greeting_tts = None
-                        try:
-                            if tts_provider.lower() == "deepgram":
-                                import livekit.plugins.deepgram
-                                greeting_tts = livekit.plugins.deepgram.TTS(model=effective_model, api_key=api_key)
-                            elif tts_provider.lower() == "cartesia":
-                                import livekit.plugins.cartesia
-                                greeting_tts = livekit.plugins.cartesia.TTS(voice=effective_voice, api_key=api_key)
-                            elif tts_provider.lower() == "elevenlabs":
-                                import livekit.plugins.elevenlabs
-                                greeting_tts = livekit.plugins.elevenlabs.TTS(voice=effective_voice, api_key=api_key)
-                            else:
-                                greeting_tts = get_tts(agent_config)
+                        logger.info(f"[GREETING_PREWARM] rendered_text={fast_greeting[:220]}")
+                        
+                        async def build_cache_audio():
+                            raw_pcm = bytearray()
+                            sample_rate = 16000
+                            num_channels = 1
                             
-                            if greeting_tts:
+                            if tts_provider.lower() == "deepgram":
+                                import aiohttp
+                                url = f"https://api.deepgram.com/v1/speak?model={effective_model}&encoding=linear16&sample_rate=24000"
+                                headers = {
+                                    "Authorization": f"Token {api_key}",
+                                    "Content-Type": "application/json"
+                                }
+                                payload_data = {"text": fast_greeting}
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(url, headers=headers, json=payload_data) as resp:
+                                        if resp.status == 200:
+                                            audio_bytes = await resp.read()
+                                            raw_pcm.extend(audio_bytes)
+                                            sample_rate = 24000
+                                            num_channels = 1
+                                        else:
+                                            error_text = await resp.text()
+                                            raise Exception(f"Deepgram REST error {resp.status}: {error_text}")
                                 logger.info(f"[GREETING_PREWARM] tts_ready provider={tts_provider} model={effective_model}")
                             else:
-                                logger.warning(f"[GREETING_PREWARM] failed reason=get_tts_returned_none; continuing_without_cache=true")
-                        except Exception as e:
-                            logger.error(f"[GREETING_PREWARM] tts_init_failed provider={tts_provider} model={effective_model} reason={str(e)}; continuing_without_cache=true")
-                            
-                        if greeting_tts:
-                            logger.info(f"[GREETING_PREWARM] rendered_text={fast_greeting[:220]}")
-                            
-                            async def build_cache_audio():
-                                raw_pcm = bytearray()
-                                sample_rate = 16000
-                                num_channels = 1
+                                greeting_tts = None
+                                if tts_provider.lower() == "cartesia":
+                                    import livekit.plugins.cartesia
+                                    greeting_tts = livekit.plugins.cartesia.TTS(voice=effective_voice, api_key=api_key)
+                                elif tts_provider.lower() == "elevenlabs":
+                                    import livekit.plugins.elevenlabs
+                                    greeting_tts = livekit.plugins.elevenlabs.TTS(voice=effective_voice, api_key=api_key)
+                                else:
+                                    greeting_tts = get_tts(agent_config)
+                                
+                                if not greeting_tts:
+                                    raise Exception("get_tts_returned_none")
+                                    
+                                logger.info(f"[GREETING_PREWARM] tts_ready provider={tts_provider} model={effective_model}")
                                 async for audio_event in greeting_tts.synthesize(fast_greeting):
                                     if audio_event.frame:
                                         sample_rate = audio_event.frame.sample_rate
                                         num_channels = audio_event.frame.num_channels
                                         raw_pcm.extend(audio_event.frame.data)
-                                        
-                                cache_file.parent.mkdir(parents=True, exist_ok=True)
-                                with wave.open(str(cache_file), 'wb') as wav:
-                                    wav.setnchannels(num_channels)
-                                    wav.setsampwidth(2)
-                                    wav.setframerate(sample_rate)
-                                    wav.writeframes(raw_pcm)
                                     
-                                duration_ms = int((len(raw_pcm) / (sample_rate * num_channels * 2)) * 1000)
-                                logger.info(f"[GREETING_PREWARM] ready path={cache_file} duration_ms={duration_ms} cache_synthesis_ms={int((time.time() - ts_cache_start)*1000)}")
+                            cache_file.parent.mkdir(parents=True, exist_ok=True)
+                            with wave.open(str(cache_file), 'wb') as wav:
+                                wav.setnchannels(num_channels)
+                                wav.setsampwidth(2)
+                                wav.setframerate(sample_rate)
+                                wav.writeframes(raw_pcm)
+                                
+                            duration_ms = int((len(raw_pcm) / (sample_rate * num_channels * 2)) * 1000)
+                            logger.info(f"[GREETING_PREWARM] ready path={cache_file} duration_ms={duration_ms} cache_synthesis_ms={int((time.time() - ts_cache_start)*1000)}")
 
-                            try:
-                                await asyncio.wait_for(build_cache_audio(), timeout=1.2)
-                            except asyncio.TimeoutError:
-                                logger.error(f"[GREETING_PREWARM] failed reason=timeout; continuing_without_cache=true")
-                            except Exception as syn_e:
-                                logger.error(f"[GREETING_PREWARM] failed reason={syn_e}; continuing_without_cache=true")
+                        try:
+                            await asyncio.wait_for(build_cache_audio(), timeout=1.2)
+                        except asyncio.TimeoutError:
+                            logger.error(f"[GREETING_PREWARM] failed reason=timeout; continuing_without_cache=true")
+                        except Exception as syn_e:
+                            logger.error(f"[GREETING_PREWARM] failed reason={syn_e}; continuing_without_cache=true")
             except Exception as prewarm_err:
                 logger.error(f"[GREETING_PREWARM] failed reason={prewarm_err}")
 
