@@ -6439,10 +6439,34 @@ The opening message has already been delivered to the user automatically by the 
                     l_id = ext_id
                     logger.info(f"[CampaignLifecycle] using external_record_id as lead_id fallback: {l_id}")
                 
+                # --- Preview call detection ---
+                # A call is a preview if ANY of the following is true:
+                #   1. source/type fields in room metadata say "preview"
+                #   2. campaign_id is null/None/"default_campaign" (preview sends null)
+                #   3. lead_id or external_record_id starts with "preview_"
+                # Check local variables FIRST (most reliable) so detection doesn't
+                # depend on room metadata being present or populated.
                 is_preview = False
-                if ctx.room.metadata:
+
+                # Check 1: direct variable inspection (works even if metadata is absent)
+                if (
+                    not c_id
+                    or str(c_id).lower() in ("none", "null", "", "default_campaign")
+                    or str(l_id).lower().startswith("preview_")
+                    or str(ext_id).lower().startswith("preview_")
+                ):
+                    is_preview = True
+
+                # Check 2: room metadata signals (belt-and-suspenders)
+                if not is_preview and ctx.room.metadata:
                     rmeta = normalize_dict(ctx.room.metadata)
-                    if rmeta.get("type") == "preview" or rmeta.get("source") == "preview" or str(rmeta.get("campaign_id")).lower() == "default_campaign" or str(rmeta.get("lead_id")).lower().startswith("preview") or str(l_id).startswith("preview"):
+                    if (
+                        rmeta.get("type") == "preview"
+                        or rmeta.get("source") == "preview"
+                        or str(rmeta.get("campaign_id", "")).lower() in ("none", "null", "", "default_campaign")
+                        or str(rmeta.get("lead_id", "")).lower().startswith("preview_")
+                        or str(rmeta.get("external_record_id", "")).lower().startswith("preview_")
+                    ):
                         is_preview = True
 
                 if is_preview:

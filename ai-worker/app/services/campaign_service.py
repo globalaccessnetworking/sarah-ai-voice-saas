@@ -90,9 +90,19 @@ def _update_campaign_stats(campaign_id: str, conn):
 
 
 def mark_campaign_call_completed(campaign_id: str, lead_id: str, duration: int = 0, transcript_count: int = 0):
-    if not campaign_id or not lead_id:
+    # Defensive guard: reject missing, placeholder, or preview IDs before any DB call.
+    _invalid_campaign = (
+        not campaign_id
+        or str(campaign_id).strip().lower() in ("none", "null", "", "default_campaign")
+    )
+    _preview_lead = lead_id and str(lead_id).lower().startswith("preview_")
+    if _invalid_campaign or _preview_lead:
+        logger.info(
+            f"[CampaignLifecycle] skipping mark_completed — preview/invalid ids "
+            f"campaign_id={campaign_id!r} lead_id={lead_id!r}"
+        )
         return
-        
+
     logger.info(f"[CampaignLifecycle] Marking lead completed campaign_id={campaign_id} lead_id={lead_id}")
     conn = get_db_connection()
     if not conn:
@@ -119,9 +129,19 @@ def mark_campaign_call_completed(campaign_id: str, lead_id: str, duration: int =
         conn.close()
 
 def mark_campaign_call_failed(campaign_id: str, lead_id: str, reason: str = ""):
-    if not campaign_id or not lead_id:
+    # Defensive guard: reject missing, placeholder, or preview IDs before any DB call.
+    _invalid_campaign = (
+        not campaign_id
+        or str(campaign_id).strip().lower() in ("none", "null", "", "default_campaign")
+    )
+    _preview_lead = lead_id and str(lead_id).lower().startswith("preview_")
+    if _invalid_campaign or _preview_lead:
+        logger.info(
+            f"[CampaignLifecycle] skipping mark_failed — preview/invalid ids "
+            f"campaign_id={campaign_id!r} lead_id={lead_id!r} reason={reason!r}"
+        )
         return
-        
+
     logger.info(f"[CampaignLifecycle] Marking lead failed campaign_id={campaign_id} lead_id={lead_id} reason={reason}")
     conn = get_db_connection()
     if not conn:

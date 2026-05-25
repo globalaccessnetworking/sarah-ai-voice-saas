@@ -86,7 +86,10 @@ class OutboundDialer:
             
         contact_name = payload.get("contact_name") or payload.get("lead_name") or (payload.get("citizen_name") if legacy_mode else None) or "Valued Customer"
         call_goal = payload.get("call_goal") or (payload.get("issue_type") if legacy_mode else None) or "General Inquiry"
-        campaign_id = payload.get("campaign_id") or "default_campaign"
+        # Preserve None for preview calls (payload sends campaign_id: null).
+        # Do NOT coerce None to "default_campaign" — that string is truthy and
+        # would bypass preview detection in run_agents.py and campaign_service.py.
+        campaign_id = payload.get("campaign_id") or None
         # agent_display_name = human-readable DB name (e.g. "Generic AI Dialer") — used in metadata for
         # routing lookups inside run_agents.py. Do NOT use for LiveKit dispatch.
         agent_display_name = payload.get("agent_name") or "outbound-agent"
@@ -117,7 +120,7 @@ class OutboundDialer:
             "to_number": phone,
             "contact_name": contact_name,
             "lead_name": contact_name,
-            "campaign_id": campaign_id,
+            "campaign_id": campaign_id or None,  # Keep null for preview calls; never coerce to "default_campaign"
             "lead_id": payload.get("lead_id") or payload.get("external_record_id") or external_record_id,
             "external_record_id": payload.get("external_record_id") or payload.get("lead_id") or external_record_id,
             "room_name": room_name,
