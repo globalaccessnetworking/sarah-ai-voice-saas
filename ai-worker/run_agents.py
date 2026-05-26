@@ -5016,6 +5016,11 @@ The opening message has already been delivered to the user automatically by the 
         setattr(session, "disconnected_before_greeting", False)
         setattr(session, "disconnected_during_greeting", False)
         setattr(session, "no_conversation", False)
+        setattr(session, "_turn_index", 0)
+        setattr(session, "_turns_data", [])
+        setattr(session, "_diagnostic_logged", False)
+        setattr(session, "_current_turn_logged", False)
+        setattr(session, "_latency_logged_turn_index", 0)
 
         # Build room options
         room_options = None
@@ -5773,6 +5778,7 @@ The opening message has already been delivered to the user automatically by the 
                 state_raw = getattr(session, "state", None)
                 state = str(getattr(state_raw, "value", state_raw)).lower()
                 ts_user_speech = time.time()
+                setattr(session, "_ts_current_user_speech_started", ts_user_speech)
                 ts_agent_stopped = getattr(session, "_ts_agent_stopped_speaking", 0)
                 recently_spoke = not is_speaking and (ts_user_speech - ts_agent_stopped < 0.8)
 
@@ -5990,7 +5996,131 @@ The opening message has already been delivered to the user automatically by the 
                                 f"[TURN_LATENCY] llm_tts_to_first_audio_ms={diff} "
                                 f"total_user_done_to_agent_audio_ms={total_gap_ms}"
                             )
-                        delattr(session, "_ts_stt_final")
+
+                        # TURN_LATENCY_DETAIL Instrumentation Patch
+                        try:
+                            turn_idx = getattr(session, "_turn_index", 0)
+                            current_logged_turn = getattr(session, "_latency_logged_turn_index", 0)
+
+                            if turn_idx > 0 and turn_idx != current_logged_turn and not getattr(session, "_current_turn_logged", False):
+                                setattr(session, "_latency_logged_turn_index", turn_idx)
+                                setattr(session, "_current_turn_logged", True)
+
+                                # Safe mathematical calculations
+                                stt_final_ts = session._ts_stt_final
+                                user_speech_ended_ts = _ts_user_stopped
+                                user_speech_started_ts = getattr(session, "_ts_current_user_speech_started", None)
+                                agent_first_audio_ts = ts_now
+
+                                stt_wait_ms = None
+                                if stt_final_ts is not None and user_speech_ended_ts is not None:
+                                    stt_wait_ms = int((stt_final_ts - user_speech_ended_ts) * 1000)
+
+                                llm_tts_to_first_audio_ms = None
+                                if stt_final_ts is not None:
+                                    llm_tts_to_first_audio_ms = int((agent_first_audio_ts - stt_final_ts) * 1000)
+
+                                total_user_done_to_agent_audio_ms = None
+                                if user_speech_ended_ts is not None:
+                                    total_user_done_to_agent_audio_ms = int((agent_first_audio_ts - user_speech_ended_ts) * 1000)
+
+                                first_user_turn = (turn_idx == 1)
+                                total_first_turn_ms = total_user_done_to_agent_audio_ms if first_user_turn else None
+
+                                # Append to session list for CALL_LATENCY_SUMMARY
+                                if hasattr(session, "_turns_data"):
+                                    session._turns_data.append({
+                                        "total_gap_ms": total_user_done_to_agent_audio_ms,
+                                        "stt_wait_ms": stt_wait_ms,
+                                        "llm_tts_to_first_audio_ms": llm_tts_to_first_audio_ms,
+                                        "first_user_turn": first_user_turn
+                                    })
+
+                                # Format output values helper
+                                def fmt_val(v, is_bool=False):
+                                    if v is None:
+                                        return "none"
+                                    if is_bool:
+                                        return "true" if v else "false"
+                                    if isinstance(v, float):
+                                        return f"{v:.3f}"
+                                    return str(v)
+
+                                # One-time diagnostics per call (once per session)
+                                if not getattr(session, "_diagnostic_logged", False):
+                                    setattr(session, "_diagnostic_logged", True)
+                                    logger.info("[TURN_LATENCY_DETAIL] llm_first_token_unavailable=true")
+                                    logger.info("[TURN_LATENCY_DETAIL] llm_first_token_hook_available=false")
+                                    logger.info("[TURN_LATENCY_DETAIL] tts_first_audio_hook_available=false")
+
+                                # Incorporate useful metadata/identifiers if available
+                                campaign_id = "none"
+                                lead_id = "none"
+                                room_name = ctx.room.name if ctx.room else "none"
+                                call_id = "none"
+
+                                if call_tracker and call_tracker.job_metadata:
+                                    ct_jm = normalize_dict(call_tracker.job_metadata)
+                                    campaign_id = ct_jm.get("campaign_id") or campaign_id
+                                    lead_id = ct_jm.get("lead_id") or ct_jm.get("leadId") or ct_jm.get("campaign_number_id") or ct_jm.get("campaignNumberId") or lead_id
+                                    call_id = ct_jm.get("sip_call_to") or ct_jm.get("call_id") or call_id
+                                if "job_metadata" in locals() and job_metadata:
+                                    jm = normalize_dict(job_metadata)
+                                    campaign_id = jm.get("campaign_id") or campaign_id
+                                    lead_id = jm.get("lead_id") or jm.get("leadId") or jm.get("campaign_number_id") or jm.get("campaignNumberId") or lead_id
+                                    call_id = jm.get("sip_call_to") or jm.get("call_id") or call_id
+                                if ctx.room and ctx.room.metadata:
+                                    rmeta = normalize_dict(ctx.room.metadata)
+                                    campaign_id = rmeta.get("campaign_id") or campaign_id
+                                    lead_id = rmeta.get("lead_id") or rmeta.get("leadId") or rmeta.get("campaign_number_id") or rmeta.get("campaignNumberId") or lead_id
+
+                                if not campaign_id or str(campaign_id).lower() in ("none", "null", ""):
+                                    campaign_id = "none"
+                                if not lead_id or str(lead_id).lower() in ("none", "null", ""):
+                                    lead_id = "none"
+                                if not call_id or str(call_id).lower() in ("none", "null", ""):
+                                    call_id = "none"
+
+                                logger.info(
+                                    f"[TURN_LATENCY_DETAIL] "
+                                    f"first_user_turn={fmt_val(first_user_turn, is_bool=True)} "
+                                    f"turn_index={fmt_val(turn_idx)} "
+                                    f"user_speech_started_ts={fmt_val(user_speech_started_ts)} "
+                                    f"user_speech_ended_ts={fmt_val(user_speech_ended_ts)} "
+                                    f"stt_final_ts={fmt_val(stt_final_ts)} "
+                                    f"llm_start_ts=none "
+                                    f"llm_first_token_ts=none "
+                                    f"tts_start_ts=none "
+                                    f"tts_first_audio_ts=none "
+                                    f"agent_first_audio_ts={fmt_val(agent_first_audio_ts)} "
+                                    f"stt_wait_ms={fmt_val(stt_wait_ms)} "
+                                    f"llm_first_token_ms=none "
+                                    f"tts_first_audio_ms=none "
+                                    f"llm_tts_to_first_audio_ms={fmt_val(llm_tts_to_first_audio_ms)} "
+                                    f"total_first_turn_ms={fmt_val(total_first_turn_ms)} "
+                                    f"total_user_done_to_agent_audio_ms={fmt_val(total_user_done_to_agent_audio_ms)} "
+                                    f"campaign_id={fmt_val(campaign_id)} "
+                                    f"lead_id={fmt_val(lead_id)} "
+                                    f"room_name={fmt_val(room_name)} "
+                                    f"call_id={fmt_val(call_id)}"
+                                )
+                        except Exception as detail_err:
+                            logger.debug(f"Error logging TURN_LATENCY_DETAIL: {detail_err}")
+
+                        try:
+                            delattr(session, "_ts_stt_final")
+                        except AttributeError:
+                            pass
+                        if hasattr(session, "_ts_user_stopped_speaking"):
+                            try:
+                                delattr(session, "_ts_user_stopped_speaking")
+                            except AttributeError:
+                                pass
+                        if hasattr(session, "_ts_current_user_speech_started"):
+                            try:
+                                delattr(session, "_ts_current_user_speech_started")
+                            except AttributeError:
+                                pass
 
                     if call_tracker:
                         call_tracker.on_agent_speech_started()
@@ -6020,6 +6150,7 @@ The opening message has already been delivered to the user automatically by the 
                 # User just started speaking — primary barge-in trigger
                 if "speaking" in new_str and "speaking" not in old_str:
                     ts_user_speech = time.time()
+                    setattr(session, "_ts_current_user_speech_started", ts_user_speech)
                     is_speaking = getattr(session, "_agent_speaking", False)
                     ts_agent_stopped = getattr(session, "_ts_agent_stopped_speaking", 0)
                     recently_spoke = not is_speaking and (ts_user_speech - ts_agent_stopped < 0.8)
@@ -6048,9 +6179,21 @@ The opening message has already been delivered to the user automatically by the 
             try:
                 is_final = getattr(event, 'is_final', False)
                 transcript = getattr(event, 'transcript', '')
-                if is_final and transcript:
+                
+                # Check optional role if exists
+                item = getattr(event, 'item', None)
+                role = getattr(item, 'role', None) if item else getattr(event, 'role', None)
+                role_str = str(role).lower() if role else "user"
+
+                if is_final and transcript and transcript.strip() and ("user" in role_str or ("assistant" not in role_str and "agent" not in role_str)):
                     _ts_stt_final = time.time()
                     setattr(session, "_ts_stt_final", _ts_stt_final)
+                    
+                    # Increment turn index and reset current turn logged status
+                    turn_idx = getattr(session, "_turn_index", 0) + 1
+                    setattr(session, "_turn_index", turn_idx)
+                    setattr(session, "_current_turn_logged", False)
+                    
                     # Compute STT finalization gap: time from user-stopped-speaking → final transcript
                     _ts_user_stopped = getattr(session, "_ts_user_stopped_speaking", None)
                     if _ts_user_stopped:
@@ -6503,6 +6646,69 @@ The opening message has already been delivered to the user automatically by the 
     finally:
         # Always ensure cleanup happens
         logger.info(f"Cleaning up session, end_reason={end_reason}")
+
+        # CALL_LATENCY_SUMMARY logger (diagnostics only)
+        if session and hasattr(session, "_turns_data"):
+            try:
+                turns_data = getattr(session, "_turns_data", [])
+                n_turns = len(turns_data)
+                
+                first_turn_total = None
+                total_gaps = []
+                stt_waits = []
+                llm_tts_to_first_audios = []
+                
+                for t in turns_data:
+                    if t.get("first_user_turn") and t.get("total_gap_ms") is not None:
+                        first_turn_total = t.get("total_gap_ms")
+                    if t.get("total_gap_ms") is not None:
+                        total_gaps.append(t.get("total_gap_ms"))
+                    if t.get("stt_wait_ms") is not None:
+                        stt_waits.append(t.get("stt_wait_ms"))
+                    if t.get("llm_tts_to_first_audio_ms") is not None:
+                        llm_tts_to_first_audios.append(t.get("llm_tts_to_first_audio_ms"))
+                        
+                def compute_p50(lst):
+                    if not lst:
+                        return None
+                    sorted_lst = sorted(lst)
+                    n_lst = len(sorted_lst)
+                    if n_lst % 2 == 1:
+                        return sorted_lst[n_lst // 2]
+                    else:
+                        return int(round((sorted_lst[n_lst // 2 - 1] + sorted_lst[n_lst // 2]) / 2.0))
+
+                def compute_avg(lst):
+                    if not lst:
+                        return None
+                    return int(round(sum(lst) / len(lst)))
+
+                def compute_max(lst):
+                    if not lst:
+                        return None
+                    return max(lst)
+                    
+                def fmt_sum_val(v):
+                    return str(v) if v is not None else "none"
+
+                avg_turn_total = compute_avg(total_gaps)
+                p50_turn_total = compute_p50(total_gaps)
+                max_turn_total = compute_max(total_gaps)
+                avg_stt_wait = compute_avg(stt_waits)
+                avg_llm_tts = compute_avg(llm_tts_to_first_audios)
+                
+                logger.info(
+                    f"[CALL_LATENCY_SUMMARY] "
+                    f"turns={n_turns} "
+                    f"first_turn_total_ms={fmt_sum_val(first_turn_total)} "
+                    f"avg_turn_total_ms={fmt_sum_val(avg_turn_total)} "
+                    f"p50_turn_total_ms={fmt_sum_val(p50_turn_total)} "
+                    f"max_turn_total_ms={fmt_sum_val(max_turn_total)} "
+                    f"avg_stt_wait_ms={fmt_sum_val(avg_stt_wait)} "
+                    f"avg_llm_tts_to_first_audio_ms={fmt_sum_val(avg_llm_tts)}"
+                )
+            except Exception as summary_err:
+                logger.debug(f"Failed to generate CALL_LATENCY_SUMMARY: {summary_err}")
 
         # Close MCP connections (Phase 4)
         mcp_manager = session_ref.get("mcp_manager")
