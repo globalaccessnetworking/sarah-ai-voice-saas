@@ -805,6 +805,16 @@ class CallTracker:
                 "attempt_count": self.job_metadata.get("attempt_count")
             }
 
+            # Ensure ViciDial metadata fields are preserved
+            v_keys = [
+                "vicidial_campaign_id", "vicidial_list_id", "vicidial_lead_id",
+                "vicidial_ingroup", "vicidial_call_uniqueid", "mapping_id",
+                "vendor_lead_code", "custom_fields"
+            ]
+            for vk in v_keys:
+                if vk in self.job_metadata and self.job_metadata[vk] is not None and self.job_metadata[vk] != "":
+                    merged_metadata[vk] = self.job_metadata[vk]
+
             # Filter out empty/None keys
             merged_metadata = {k: v for k, v in merged_metadata.items() if v is not None and v != ""}
 
@@ -3835,6 +3845,130 @@ async def entrypoint(ctx: JobContext):
                         logger.info(f"SIP Redis routing resolved: {to_number} -> {agent_slug}")
                         break
                 except: pass
+
+        # --- Mandatory safety correction: Feature Flag Guarded ViciDial Integration ---
+        is_vicidial_enabled = os.getenv("VICIDIAL_INTEGRATION_ENABLED", "false").lower() == "true"
+        logger.info(f"[VICIDIAL_CONTEXT] lookup_enabled={is_vicidial_enabled}")
+        
+        if is_vicidial_enabled:
+            caller_phone = ""
+            call_id = ""
+            for p in ctx.room.remote_participants.values():
+                attrs = getattr(p, 'attributes', {}) or {}
+                caller_phone = attrs.get("sip.phoneNumber") or attrs.get("sip.callerNumber") or ""
+                call_id = attrs.get("sip.callID") or ""
+                if caller_phone or call_id:
+                    break
+            
+            # Fallback to room name pattern for phone number
+            if not caller_phone and ctx.room.name:
+                import re
+                phone_match = re.search(r'_?(\+?\d{10,15})_', ctx.room.name)
+                if phone_match:
+                    caller_phone = phone_match.group(1)
+            
+            clean_phone = ""
+            if caller_phone:
+                import re
+                clean_phone = re.sub(r'[\+\s\-\(\)]', '', caller_phone)
+                
+            # Perform multi-key Redis lookups in strict priority: uniqueid -> lead_id -> phone
+            vicidial_ctx_raw = None
+            matched_key = None
+            
+            try:
+                r = agent_storage.get_redis_client()
+                
+                # Priority 1: uniqueid
+                if call_id and not vicidial_ctx_raw:
+                    uniqueid_key = f"vicidial_context:uniqueid:{call_id}"
+                    vicidial_ctx_raw = r.get(uniqueid_key)
+                    if vicidial_ctx_raw:
+                        matched_key = uniqueid_key
+                
+                # Priority 2: phone
+                if clean_phone and not vicidial_ctx_raw:
+                    phone_key = f"vicidial_context:phone:{clean_phone}"
+                    vicidial_ctx_raw = r.get(phone_key)
+                    if vicidial_ctx_raw:
+                        matched_key = phone_key
+                        
+                # Priority 3: phone with leading zero/country prefix stripped
+                if clean_phone and not vicidial_ctx_raw:
+                    stripped_phone = clean_phone.lstrip("0").lstrip("1")
+                    # Try matching keys with patterns
+                    for key in r.keys("vicidial_context:phone:*"):
+                        if key.endswith(stripped_phone):
+                            vicidial_ctx_raw = r.get(key)
+                            if vicidial_ctx_raw:
+                                matched_key = key
+                                break
+            except Exception as redis_err:
+                logger.error(f"[VICIDIAL_CONTEXT] Redis connection/lookup failed: {redis_err}")
+                
+            if vicidial_ctx_raw:
+                try:
+                    vicidial_ctx = json.loads(vicidial_ctx_raw)
+                    logger.info(f"[VICIDIAL_CONTEXT] lookup_hit=true key={matched_key}")
+                    
+                    v_camp = vicidial_ctx.get("vicidial_campaign_id")
+                    v_list = vicidial_ctx.get("vicidial_list_id")
+                    v_ingroup = vicidial_ctx.get("vicidial_ingroup")
+                    v_lead_id = vicidial_ctx.get("vicidial_lead_id")
+                    
+                    # Mapping priority resolution
+                    resolved_mapping = await agent_storage.resolve_vicidial_agent_mapping(v_camp, v_list, v_ingroup)
+                    
+                    if resolved_mapping:
+                        mapped_slug = resolved_mapping.get("agent_slug") or resolved_mapping.get("agent_id")
+                        if mapped_slug:
+                            # Verify mapped agent exists and is active
+                            target_config = await agent_storage.get_agent_config_by_id_or_slug(mapped_slug)
+                            if target_config and target_config.get("status") == "running":
+                                agent_slug = mapped_slug
+                                
+                                # Enrich job metadata with normalized parameters
+                                try:
+                                    meta_obj = json.loads(job_metadata) if job_metadata else {}
+                                except:
+                                    meta_obj = {}
+                                
+                                meta_obj["source"] = "vicidial"
+                                meta_obj["type"] = "vicidial"
+                                meta_obj["campaign_id"] = resolved_mapping.get("id") # Unique mapping ID
+                                meta_obj["lead_id"] = v_lead_id
+                                meta_obj["external_record_id"] = v_lead_id
+                                meta_obj["phone"] = clean_phone
+                                meta_obj["contact_name"] = vicidial_ctx.get("contact_name") or "Customer"
+                                meta_obj["dynamic_vars"] = vicidial_ctx.get("lead_data", {})
+                                meta_obj["lead_data"] = vicidial_ctx.get("lead_data", {})
+                                meta_obj["opening_message"] = resolved_mapping.get("opening_message")
+                                meta_obj["call_goal"] = resolved_mapping.get("call_goal") or f"ViciDial Mapping - {resolved_mapping.get('name')}"
+                                meta_obj["script"] = resolved_mapping.get("script")
+                                
+                                # Store all identifiers in root
+                                meta_obj["vicidial_campaign_id"] = v_camp
+                                meta_obj["vicidial_list_id"] = v_list
+                                meta_obj["vicidial_lead_id"] = v_lead_id
+                                meta_obj["vicidial_ingroup"] = v_ingroup
+                                meta_obj["vicidial_call_uniqueid"] = vicidial_ctx.get("vicidial_call_uniqueid") or call_id
+                                meta_obj["mapping_id"] = resolved_mapping.get("id")
+                                meta_obj["agent_id"] = target_config.get("id")
+                                meta_obj["agent_slug"] = mapped_slug
+                                
+                                job_metadata = json.dumps(meta_obj)
+                                logger.info(f"[VICIDIAL_AGENT] override_applied=true agent_slug={mapped_slug}")
+                            else:
+                                logger.warning(f"[VICIDIAL_AGENT] fallback reason=mapped_agent_inactive agent_slug={mapped_slug}")
+                        else:
+                            logger.warning(f"[VICIDIAL_AGENT] fallback reason=missing_agent_reference mapping_id={resolved_mapping.get('id')}")
+                    else:
+                        logger.info(f"[VICIDIAL_AGENT] fallback reason=mapping_not_found campaign={v_camp} list={v_list} ingroup={v_ingroup}")
+                except Exception as parse_err:
+                    logger.error(f"[VICIDIAL_CONTEXT] Failed to parse cached payload: {parse_err}")
+            else:
+                logger.info(f"[VICIDIAL_CONTEXT] lookup_miss phone={clean_phone} uniqueid={call_id}")
+                logger.warning("[VICIDIAL_AGENT] fallback reason=context_not_found")
 
     # If this is an outbound call missing a slug, check the environment fallback or use generic default
     is_outbound_call = getattr(ctx.job, 'agent_name', None) == "outbound-agent" or not is_inbound_worker

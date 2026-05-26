@@ -257,3 +257,93 @@ def get_agents_from_redis_legacy():
 
 def get_min_duration_settings(): return {}
 def get_ai_summary_settings(): return {"auto_generate": False}
+
+async def resolve_vicidial_agent_mapping(campaign_id: str, list_id: str, ingroup: str):
+    """
+    Looks up the active ViciDial agent mapping based on campaign, list, and ingroup parameters.
+    Uses PostgreSQL lookup with hierarchical priority matching score.
+    """
+    if not DB_URL:
+        logger.error("[VICIDIAL_MAPPING] DATABASE_URL not set.")
+        return None
+
+    try:
+        conn = await asyncpg.connect(DB_URL)
+        try:
+            # Query all active mappings
+            rows = await conn.fetch("""
+                SELECT 
+                    m.id, m.name, m.vicidial_campaign_id, m.vicidial_list_id, m.vicidial_ingroup, 
+                    m.agent_id, a.slug as agent_slug, m.opening_message, m.call_goal, m.script,
+                    m.lead_field_mapping, m.disposition_mapping
+                FROM vicidial_mappings m
+                LEFT JOIN agents a ON m.agent_id = a.id
+                WHERE m.is_active = TRUE
+            """)
+            
+            if not rows:
+                logger.info("[VICIDIAL_MAPPING] No active mappings found in DB.")
+                return None
+            
+            c_id = str(campaign_id or "").strip().lower()
+            l_id = str(list_id or "").strip().lower()
+            i_id = str(ingroup or "").strip().lower()
+            
+            mappings = [dict(r) for r in rows]
+            
+            best_match = None
+            best_score = -1
+            
+            for m in mappings:
+                m_camp = str(m.get("vicidial_campaign_id") or "").strip().lower()
+                m_list = str(m.get("vicidial_list_id") or "").strip().lower()
+                m_ing = str(m.get("vicidial_ingroup") or "").strip().lower()
+                
+                score = 0
+                match = True
+                
+                # Check Campaign specificity
+                if m_camp:
+                    if m_camp == c_id:
+                        score += 10
+                    else:
+                        match = False
+                
+                # Check List specificity
+                if m_list:
+                    if m_list == l_id:
+                        score += 5
+                    else:
+                        match = False
+                        
+                # Check Ingroup specificity
+                if m_ing:
+                    if m_ing == i_id:
+                        score += 5
+                    else:
+                        match = False
+                        
+                # Require at least one criteria to be matched
+                if not m_camp and not m_list and not m_ing:
+                    match = False
+                    
+                if match and score > best_score:
+                    best_score = score
+                    best_match = m
+            
+            if best_match:
+                logger.info(
+                    f"[VICIDIAL_MAPPING] resolved mapping_id={best_match['id']} "
+                    f"score={best_score} campaign_id={campaign_id} list_id={list_id} "
+                    f"ingroup={ingroup} agent_slug={best_match.get('agent_slug')}"
+                )
+                return best_match
+            
+            logger.info(f"[VICIDIAL_MAPPING] No matching rule found for campaign={campaign_id}, list={list_id}, ingroup={ingroup}")
+            return None
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"[VICIDIAL_MAPPING] Database error resolving mapping: {e}")
+        return None
+
