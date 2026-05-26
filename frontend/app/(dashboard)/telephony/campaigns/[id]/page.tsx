@@ -36,6 +36,7 @@ interface CampaignStats {
     completed: number;
     failed: number;
     progress: number;
+    retry_scheduled: number;
 }
 
 interface CampaignDetails {
@@ -196,12 +197,20 @@ export default function CampaignDetailsPage() {
                 {stats.total > 0 && (
                     <div className="w-full bg-zinc-900/50 border border-zinc-800 p-4 rounded-xl flex flex-col gap-2">
                         <div className="flex justify-between text-xs font-medium text-zinc-400 mb-1">
-                            <span>Campaign Progress ({stats.completed + stats.failed} / {stats.total})</span>
+                            <span>
+                                Campaign Progress ({stats.completed + stats.failed} / {stats.total})
+                                {stats.retry_scheduled > 0 && (
+                                    <span className="text-cyan-400 ml-1.5" title={`${stats.retry_scheduled} scheduled for retry`}>
+                                        ({stats.retry_scheduled} retry)
+                                    </span>
+                                )}
+                            </span>
                             <span>{stats.progress}%</span>
                         </div>
                         <div className="h-4 w-full bg-zinc-800 rounded-full flex overflow-hidden">
                             <div className="bg-emerald-500 h-full transition-all duration-500" style={{ width: `${(stats.completed / stats.total) * 100}%` }} title={`Completed: ${stats.completed}`} />
                             <div className="bg-red-500 h-full transition-all duration-500" style={{ width: `${(stats.failed / stats.total) * 100}%` }} title={`Failed: ${stats.failed}`} />
+                            <div className="bg-cyan-500 h-full transition-all duration-500" style={{ width: `${(stats.retry_scheduled / stats.total) * 100}%` }} title={`Retry Scheduled: ${stats.retry_scheduled}`} />
                             <div className="bg-amber-500 h-full transition-all duration-500" style={{ width: `${(stats.processing / stats.total) * 100}%` }} title={`Processing: ${stats.processing}`} />
                             <div className="bg-zinc-700 h-full transition-all duration-500" style={{ width: `${(stats.pending / stats.total) * 100}%` }} title={`Pending: ${stats.pending}`} />
                         </div>

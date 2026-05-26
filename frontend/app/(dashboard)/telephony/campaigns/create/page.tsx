@@ -359,7 +359,7 @@ export default function CreateCampaignPage() {
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-6 pt-4 border-t border-zinc-800/50">
+                                <div className="grid grid-cols-3 gap-6 pt-4 border-t border-zinc-800/50">
                                     <div className="space-y-2">
                                         <label className="text-sm font-medium text-white">Max Concurrency</label>
                                         <p className="text-xs text-zinc-400 mb-2">Number of simultaneous calls</p>
@@ -369,6 +369,11 @@ export default function CreateCampaignPage() {
                                         <label className="text-sm font-medium text-white">Retry Attempts</label>
                                         <p className="text-xs text-zinc-400 mb-2">If busy, no answer, or failed</p>
                                         <input type="number" min="0" value={formData.retryAttempts} onChange={(e) => setFormData({ ...formData, retryAttempts: parseInt(e.target.value) || 0 })} className="input-field w-full" />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium text-white">Retry Delay (Seconds)</label>
+                                        <p className="text-xs text-zinc-400 mb-2">How long to wait before retrying busy/no-answer/failed leads.</p>
+                                        <input type="number" min="0" value={formData.retryDelaySeconds} onChange={(e) => setFormData({ ...formData, retryDelaySeconds: parseInt(e.target.value) || 0 })} className="input-field w-full" />
                                     </div>
                                 </div>
 

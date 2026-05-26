@@ -17,6 +17,9 @@ interface Campaign {
         total: number;
         completed: number;
         failed: number;
+        retry_scheduled?: number;
+        processing?: number;
+        pending?: number;
     };
     createdAt: string;
 }
@@ -232,14 +235,16 @@ export default function CampaignsPage() {
                                     </tr>
                                 ) : (
                                     filteredCampaigns.map((campaign) => {
-                                        const { total, completed, failed } = campaign.stats || { total: 0, completed: 0, failed: 0 };
-                                        const pending = total - (completed + failed);
+                                        const { total, completed, failed, retry_scheduled = 0, processing = 0 } = campaign.stats || { total: 0, completed: 0, failed: 0, retry_scheduled: 0, processing: 0 };
+                                        const actualPending = Math.max(0, total - (completed + failed + retry_scheduled + processing));
 
                                         // Calculate percentages for stacked bar
                                         const totalValid = total > 0 ? total : 1;
                                         const completedPct = (completed / totalValid) * 100;
                                         const failedPct = (failed / totalValid) * 100;
-                                        const pendingPct = (pending / totalValid) * 100;
+                                        const retryPct = (retry_scheduled / totalValid) * 100;
+                                        const processingPct = (processing / totalValid) * 100;
+                                        const pendingPct = (actualPending / totalValid) * 100;
                                         
                                         const isPreview = campaign.campaignType === 'preview' || campaign.campaignType === 'vicidial';
 
@@ -269,12 +274,21 @@ export default function CampaignsPage() {
                                                     <div className="w-full max-w-[200px] flex flex-col gap-2">
                                                         <div className="flex justify-between text-xs text-zinc-500">
                                                             <span>{completed + failed} / {total}</span>
-                                                            <span className="text-zinc-400">{Math.round(((completed + failed) / totalValid) * 100)}%</span>
+                                                            <span className="text-zinc-400">
+                                                                {Math.round(((completed + failed) / totalValid) * 100)}%
+                                                                {retry_scheduled > 0 && (
+                                                                    <span className="text-cyan-400 ml-1.5" title={`${retry_scheduled} scheduled for retry`}>
+                                                                        ({retry_scheduled} retry)
+                                                                    </span>
+                                                                )}
+                                                            </span>
                                                         </div>
                                                         <div className="h-2 w-full bg-zinc-800 rounded-full flex overflow-hidden">
                                                             <div className="bg-emerald-500 h-full" style={{ width: `${completedPct}%` }} title={`Completed: ${completed}`} />
                                                             <div className="bg-red-500 h-full" style={{ width: `${failedPct}%` }} title={`Failed: ${failed}`} />
-                                                            <div className="bg-zinc-700 h-full" style={{ width: `${pendingPct}%` }} title={`Pending: ${pending}`} />
+                                                            <div className="bg-cyan-500 h-full" style={{ width: `${retryPct}%` }} title={`Retry Scheduled: ${retry_scheduled}`} />
+                                                            <div className="bg-amber-500 h-full" style={{ width: `${processingPct}%` }} title={`Processing: ${processing}`} />
+                                                            <div className="bg-zinc-700 h-full" style={{ width: `${pendingPct}%` }} title={`Pending: ${actualPending}`} />
                                                         </div>
                                                     </div>
                                                 </td>

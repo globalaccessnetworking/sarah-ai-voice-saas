@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import psycopg2
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger("ai_worker.services.campaign_service")
 
@@ -169,8 +169,13 @@ def mark_campaign_call_failed(campaign_id: str, lead_id: str, reason: str = "", 
             
             disposition = reason[:50] if reason else "failed"
             
-            if attempt_count < retry_attempts:
+            is_retryable = attempt_count < retry_attempts
+            logger.info(f"[RetryRules] failure reason={reason} retryable={str(is_retryable).lower()} attempt={attempt_count} max_attempts={retry_attempts}")
+            
+            if is_retryable:
                 # Schedule retry
+                next_retry_dt = datetime.utcnow() + timedelta(seconds=retry_delay_seconds)
+                logger.info(f"[RetryRules] scheduling retry lead={lead_id} next_retry_at={next_retry_dt.isoformat()}")
                 cur.execute(
                     """
                     UPDATE campaign_numbers 
@@ -186,6 +191,7 @@ def mark_campaign_call_failed(campaign_id: str, lead_id: str, reason: str = "", 
                 )
             else:
                 # Max retries reached, fail permanently
+                logger.info(f"[RetryRules] final failed lead={lead_id} reason={reason}")
                 cur.execute(
                     """
                     UPDATE campaign_numbers 
