@@ -320,20 +320,72 @@ class SovereignToolProvider:
                     WHERE ticket_id = $1
                 """, ticket_id)
                 
-                # Log to Call Logs (Analytics)
+                # Log to Call Logs (Analytics) - Race-safe canonical updates
                 duration = int((datetime.now() - self.start_time).total_seconds())
                 log_id = str(uuid.uuid4())
-                metadata = {
+                incoming_metadata = {
                     "ticket_id": ticket_id,
                     "feedback": "still_issue",
                     "direction": "outbound",
                     "source": "digital_ear"
                 }
-                
-                await conn.execute("""
-                    INSERT INTO call_logs (id, agent_id, room_name, direction, status, to_number, duration_seconds, metadata)
-                    VALUES ($1, $2, $3, 'outbound', 'completed', $4, $5, $6)
-                """, log_id, self.agent_config.get("id"), self.room.name, self.to_number, duration, json.dumps(metadata))
+
+                # Exclusive transaction-level advisory lock by room_name
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", self.room.name)
+                logger.info(f"[CALL_LOG_PERSIST] action=advisory_lock_acquired room_name={self.room.name} source=agentic_suite_unresolved")
+
+                # Fetch all rows matching the room name to select the canonical one
+                rows = await conn.fetch("""
+                    SELECT id, duration_seconds, transcript, summary, metadata FROM call_logs
+                    WHERE room_name = $1
+                """, self.room.name)
+
+                existing_id = None
+                existing_metadata = {}
+                existing_duration = 0
+
+                if rows:
+                    def sort_key(r):
+                        r_id, dur, tr, sm, md = r
+                        has_dur = 1 if (dur and dur > 0) else 0
+                        has_tr = 1 if tr else 0
+                        has_sm = 1 if sm else 0
+                        meta_len = len(md) if md else 0
+                        return (has_dur, has_tr, has_sm, meta_len)
+
+                    sorted_rows = sorted(rows, key=sort_key, reverse=True)
+                    existing_id = sorted_rows[0]['id']
+                    existing_duration = sorted_rows[0]['duration_seconds'] or 0
+                    existing_meta_raw = sorted_rows[0]['metadata']
+
+                    if existing_meta_raw:
+                        if isinstance(existing_meta_raw, dict):
+                            existing_metadata = existing_meta_raw
+                        elif isinstance(existing_meta_raw, str):
+                            try:
+                                existing_metadata = json.loads(existing_meta_raw)
+                            except: pass
+
+                # Merge metadata safely
+                merged_metadata = {**existing_metadata}
+                merged_metadata.update(incoming_metadata)
+                resolved_duration = max(existing_duration, duration)
+
+                if existing_id:
+                    logger.info(f"[CALL_LOG_PERSIST] action=update_existing room_name={self.room.name} id={existing_id} source=agentic_suite_unresolved")
+                    await conn.execute("""
+                        UPDATE call_logs
+                        SET status = 'completed',
+                            duration_seconds = $1,
+                            metadata = $2
+                        WHERE id = $3
+                    """, resolved_duration, json.dumps(merged_metadata), existing_id)
+                else:
+                    logger.info(f"[CALL_LOG_PERSIST] action=create room_name={self.room.name} id={log_id} source=agentic_suite_unresolved")
+                    await conn.execute("""
+                        INSERT INTO call_logs (id, agent_id, room_name, direction, status, to_number, duration_seconds, metadata)
+                        VALUES ($1, $2, $3, 'outbound', 'completed', $4, $5, $6)
+                    """, log_id, self.agent_config.get("id"), self.room.name, self.to_number, resolved_duration, json.dumps(merged_metadata))
 
                 if self.session:
                     # Silence Guard: Stop the current chatter before playing unresolved notice
@@ -377,20 +429,72 @@ class SovereignToolProvider:
                     WHERE ticket_id = $1
                 """, ticket_id)
 
-                # Log to Call Logs (Analytics)
+                # Log to Call Logs (Analytics) - Race-safe canonical updates
                 duration = int((datetime.now() - self.start_time).total_seconds())
                 log_id = str(uuid.uuid4())
-                metadata = {
+                incoming_metadata = {
                     "ticket_id": ticket_id,
                     "feedback": "verified",
                     "direction": "outbound",
                     "source": "digital_ear"
                 }
-                
-                await conn.execute("""
-                    INSERT INTO call_logs (id, agent_id, room_name, direction, status, to_number, duration_seconds, metadata)
-                    VALUES ($1, $2, $3, 'outbound', 'completed', $4, $5, $6)
-                """, log_id, self.agent_config.get("id"), self.room.name, self.to_number, duration, json.dumps(metadata))
+
+                # Exclusive transaction-level advisory lock by room_name
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", self.room.name)
+                logger.info(f"[CALL_LOG_PERSIST] action=advisory_lock_acquired room_name={self.room.name} source=agentic_suite_resolved")
+
+                # Fetch all rows matching the room name to select the canonical one
+                rows = await conn.fetch("""
+                    SELECT id, duration_seconds, transcript, summary, metadata FROM call_logs
+                    WHERE room_name = $1
+                """, self.room.name)
+
+                existing_id = None
+                existing_metadata = {}
+                existing_duration = 0
+
+                if rows:
+                    def sort_key(r):
+                        r_id, dur, tr, sm, md = r
+                        has_dur = 1 if (dur and dur > 0) else 0
+                        has_tr = 1 if tr else 0
+                        has_sm = 1 if sm else 0
+                        meta_len = len(md) if md else 0
+                        return (has_dur, has_tr, has_sm, meta_len)
+
+                    sorted_rows = sorted(rows, key=sort_key, reverse=True)
+                    existing_id = sorted_rows[0]['id']
+                    existing_duration = sorted_rows[0]['duration_seconds'] or 0
+                    existing_meta_raw = sorted_rows[0]['metadata']
+
+                    if existing_meta_raw:
+                        if isinstance(existing_meta_raw, dict):
+                            existing_metadata = existing_meta_raw
+                        elif isinstance(existing_meta_raw, str):
+                            try:
+                                existing_metadata = json.loads(existing_meta_raw)
+                            except: pass
+
+                # Merge metadata safely
+                merged_metadata = {**existing_metadata}
+                merged_metadata.update(incoming_metadata)
+                resolved_duration = max(existing_duration, duration)
+
+                if existing_id:
+                    logger.info(f"[CALL_LOG_PERSIST] action=update_existing room_name={self.room.name} id={existing_id} source=agentic_suite_resolved")
+                    await conn.execute("""
+                        UPDATE call_logs
+                        SET status = 'completed',
+                            duration_seconds = $1,
+                            metadata = $2
+                        WHERE id = $3
+                    """, resolved_duration, json.dumps(merged_metadata), existing_id)
+                else:
+                    logger.info(f"[CALL_LOG_PERSIST] action=create room_name={self.room.name} id={log_id} source=agentic_suite_resolved")
+                    await conn.execute("""
+                        INSERT INTO call_logs (id, agent_id, room_name, direction, status, to_number, duration_seconds, metadata)
+                        VALUES ($1, $2, $3, 'outbound', 'completed', $4, $5, $6)
+                    """, log_id, self.agent_config.get("id"), self.room.name, self.to_number, resolved_duration, json.dumps(merged_metadata))
 
                 if self.session:
                     # Silence Guard: Stop the current chatter before playing resolved confirmation

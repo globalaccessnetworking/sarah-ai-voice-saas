@@ -33,8 +33,20 @@ async def process_post_call_analytics(room_name: str, transcript: list, metadata
     # 2. Extract Analytics using OpenAI (Conditional)
     sentiment_enabled = (metadata or {}).get("sentiment_analysis", False)
     analytics_data = {}
+    summary_error = None
     if sentiment_enabled:
-        analytics_data = await _extract_analytics_with_openai(formatted_transcript)
+        try:
+            analytics_data = await _extract_analytics_with_openai(formatted_transcript)
+            if analytics_data.get("summary") == "Analytics processing failed.":
+                summary_error = "OpenAI API call returned failure dictionary"
+        except Exception as err:
+            logger.error(f"OpenAI extraction failed: {err}")
+            analytics_data = {
+                "summary": "Analytics processing failed.",
+                "sentiment": "Unknown",
+                "action_items": []
+            }
+            summary_error = str(err)
     else:
         logger.info(f"Sentiment Analysis is DISABLED for {room_name}. Skipping OpenAI processing.")
         analytics_data = {
@@ -56,6 +68,8 @@ async def process_post_call_analytics(room_name: str, transcript: list, metadata
             "action_items": analytics_data.get("action_items", []),
             "processed_at": datetime.utcnow().isoformat()
         }
+        if summary_error:
+            final_payload["summary_error"] = summary_error
         
         # Update the call record in the DB/Redis
         complete_call_record(room_name, final_payload)

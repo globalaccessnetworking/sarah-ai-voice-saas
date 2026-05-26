@@ -776,10 +776,48 @@ class CallTracker:
             sip_meta = sip_metadata or {}
 
             # Determine direction from SIP call ID format or metadata
-            # Inbound calls typically have caller info in "from" field
             direction = sip_meta.get("direction", "inbound")
 
-            # Create call record
+            # If enqueued campaign metadata exists, force outbound and extract tracking keys
+            is_campaign_call = False
+            campaign_id = self.job_metadata.get("campaign_id")
+            lead_id = self.job_metadata.get("lead_id") or self.job_metadata.get("external_record_id")
+            
+            if campaign_id or lead_id or self.job_metadata.get("type") == "outbound_campaign_call":
+                is_campaign_call = True
+                direction = "outbound"
+
+            # Merge enqueued campaign metadata tunnels defensively
+            merged_metadata = {
+                "campaign_id": campaign_id,
+                "lead_id": lead_id,
+                "external_record_id": self.job_metadata.get("external_record_id") or lead_id,
+                "phone": self.job_metadata.get("phone"),
+                "caller_id": self.job_metadata.get("caller_id"),
+                "agent_id": self.job_metadata.get("agent_id") or self.agent_config.get("id"),
+                "agent_slug": self.job_metadata.get("agent_slug") or self.agent_config.get("slug"),
+                "room_name": self.room_name,
+                "call_goal": self.job_metadata.get("call_goal"),
+                "opening_message": self.job_metadata.get("opening_message"),
+                "type": self.job_metadata.get("type", "outbound_campaign_call"),
+                "source": self.job_metadata.get("source", "campaign"),
+                "direction": direction,
+                "attempt_count": self.job_metadata.get("attempt_count")
+            }
+
+            # Filter out empty/None keys
+            merged_metadata = {k: v for k, v in merged_metadata.items() if v is not None and v != ""}
+
+            if metadata:
+                merged_metadata.update(metadata)
+
+            sip_call_id = sip_meta.get("call_id")
+            if sip_call_id:
+                merged_metadata["sip_call_id"] = sip_call_id
+
+            logger.info(f"[CALL_LOG_PERSIST] start_call merging campaign metadata: campaign_id={campaign_id} lead_id={lead_id} direction={direction}")
+
+            # Create call record (will perform deduplicating create-or-update by room name)
             record = call_history.create_call_record(
                 call_id=sip_meta.get("call_id", self.room_name), # fallback to room name
                 agent_id=self.agent_config.get("id", ""),
@@ -787,7 +825,7 @@ class CallTracker:
                 direction=direction,
                 from_number=sip_meta.get("from_number", sip_meta.get("caller_id", "")),
                 to_number=sip_meta.get("to_number", sip_meta.get("called_number", "")),
-                metadata=metadata
+                metadata=merged_metadata
             )
 
             # Store just the call ID, not the entire record
@@ -4085,15 +4123,44 @@ async def entrypoint(ctx: JobContext):
     # [FIX] Early Database Registration: Pass the resolved name to the DB immediately
     if not is_agent_tester_call and call_history:
         try:
+            early_direction = sip_metadata.get("direction", "inbound")
+            early_meta = {
+                "caller_name": caller_name,
+                "caller_phone": caller_phone,
+                "room_name": ctx.room.name
+            }
+            # Extract campaign fields early if available in job metadata
+            _m_obj = locals().get("meta_obj", {})
+            if _m_obj:
+                c_id = _m_obj.get("campaign_id")
+                l_id = _m_obj.get("lead_id") or _m_obj.get("external_record_id")
+                if c_id or l_id:
+                    early_direction = "outbound"
+                    early_meta.update({
+                        "campaign_id": c_id,
+                        "lead_id": l_id,
+                        "external_record_id": _m_obj.get("external_record_id") or l_id,
+                        "phone": _m_obj.get("phone"),
+                        "caller_id": _m_obj.get("caller_id"),
+                        "agent_slug": _m_obj.get("agent_slug") or agent_slug,
+                        "type": _m_obj.get("type", "outbound_campaign_call"),
+                        "source": _m_obj.get("source", "campaign"),
+                        "direction": "outbound",
+                        "attempt_count": _m_obj.get("attempt_count")
+                    })
+            
+            # Clean none/empty values from early_meta
+            early_meta = {k: v for k, v in early_meta.items() if v is not None and v != ""}
+            
             call_history.create_call_record(
                 call_id=ctx.job.id,
                 agent_id=agent_config.get("id"),
                 room_name=ctx.room.name,
-                direction=sip_metadata.get("direction", "inbound"),
+                direction=early_direction,
                 from_number=caller_phone,
-                metadata={"caller_name": caller_name, "caller_phone": caller_phone}
+                metadata=early_meta
             )
-            logger.info(f"Early DB Mapping: Created call record for {caller_name} ({caller_phone})")
+            logger.info(f"Early DB Mapping: Created/Updated call record for {caller_name} ({caller_phone}), direction={early_direction}")
         except Exception as e:
             logger.error(f"Failed to create early call record: {e}")
     # -------------------------------------------------------
