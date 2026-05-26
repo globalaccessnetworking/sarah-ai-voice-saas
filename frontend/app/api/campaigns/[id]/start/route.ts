@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@/db';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, or, lte, sql } from 'drizzle-orm';
 import { enqueueRedisJob } from '@/lib/queue';
 
 const { campaigns, campaignNumbers, agents, sipTrunks } = schema;
@@ -61,15 +61,22 @@ export async function POST(
             return NextResponse.json({ error: "Campaign is missing a valid SIP Trunk." }, { status: 400 });
         }
 
-        // 4. Fetch a small batch of pending numbers based on max_concurrency
+        // 4. Fetch a small batch of pending or eligible retry numbers based on max_concurrency
         const concurrency = campaign.concurrency || 1;
         const batchSize = concurrency; // Refill worker maintains concurrency; start exactly N
 
+        const now = new Date();
         const numbersToCall = await db.select()
             .from(campaignNumbers)
             .where(and(
                 eq(campaignNumbers.campaignId, campaignId),
-                eq(campaignNumbers.status, 'pending')
+                or(
+                    eq(campaignNumbers.status, 'pending'),
+                    and(
+                        eq(campaignNumbers.status, 'retry_scheduled'),
+                        lte(campaignNumbers.nextRetryAt, now)
+                    )
+                )
             ))
             .limit(batchSize);
 
@@ -79,7 +86,7 @@ export async function POST(
             await db.update(campaigns)
                 .set({ status: 'running' })
                 .where(eq(campaigns.id, campaignId));
-            return NextResponse.json({ success: true, message: "Campaign started, but no pending numbers left.", enqueued: 0 }, { status: 200 });
+            return NextResponse.json({ success: true, message: "Campaign started, but no eligible numbers left.", enqueued: 0 }, { status: 200 });
         }
 
         // 5. Enqueue to Redis
@@ -87,6 +94,15 @@ export async function POST(
         const queueName = process.env.AI_DIALER_OUTBOUND_QUEUE || 'ai_dialer_outbound_queue';
         
         for (const number of numbersToCall) {
+            // MARK PROCESSING BEFORE ENQUEUE
+            await db.update(campaignNumbers)
+                .set({ 
+                    status: 'processing',
+                    attemptCount: sql`${campaignNumbers.attemptCount} + 1`,
+                    lastAttemptAt: new Date()
+                })
+                .where(eq(campaignNumbers.id, number.id));
+                
             const sipCallTo = normalizePhone(number.phone);
             const callerId = campaign.callerId || ((Array.isArray(trunk.numbers) && trunk.numbers.length > 0 && typeof trunk.numbers[0] === 'string') ? trunk.numbers[0] : trunk.name);
             
@@ -134,16 +150,23 @@ export async function POST(
                 voice_id: agent.ttsVoiceId
             });
 
-            await enqueueRedisJob(queueName, payload);
-            
-            console.log("[CampaignStart] Enqueued job successfully", { queueName, campaignId, leadId: number.id });
-            
-            // Mark as processing
-            await db.update(campaignNumbers)
-                .set({ status: 'processing' })
-                .where(eq(campaignNumbers.id, number.id));
-                
-            enqueuedCount++;
+            try {
+                await enqueueRedisJob(queueName, payload);
+                console.log("[CampaignStart] Enqueued job successfully", { queueName, campaignId, leadId: number.id });
+                enqueuedCount++;
+            } catch (redisError) {
+                console.error("[CampaignStart] Redis enqueue failed for lead", number.id, redisError);
+                // Revert database claim
+                await db.update(campaignNumbers)
+                    .set({
+                        status: number.status,
+                        attemptCount: number.attemptCount,
+                        lastAttemptAt: number.lastAttemptAt,
+                        nextRetryAt: number.nextRetryAt
+                    })
+                    .where(eq(campaignNumbers.id, number.id));
+                throw redisError;
+            }
         }
 
         // 6. Update Status to Running ONLY after successful enqueue

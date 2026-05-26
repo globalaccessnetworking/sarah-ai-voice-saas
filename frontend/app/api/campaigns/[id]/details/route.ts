@@ -62,6 +62,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         const total = leads.length;
         const pending = leads.filter(l => l.status === 'pending').length;
         const processing = leads.filter(l => l.status === 'processing').length;
+        const retry_scheduled = leads.filter(l => l.status === 'retry_scheduled').length;
         const completed = leads.filter(l => l.status === 'completed').length;
         // User requested: (completed + failed + no_answer + busy + disconnected_before_greeting + no_conversation) / total
         const failedStatuses = ['failed', 'no_answer', 'busy', 'disconnected_before_greeting', 'no_conversation'];
@@ -73,6 +74,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
             total,
             pending,
             processing,
+            retry_scheduled,
             completed,
             failed,
             progress

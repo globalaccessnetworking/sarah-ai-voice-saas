@@ -35,7 +35,8 @@ def _update_campaign_stats(campaign_id: str, conn):
                     SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
                     SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
                     SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status = 'retry_scheduled' THEN 1 ELSE 0 END) as retry_scheduled
                 FROM campaign_numbers
                 WHERE campaign_id = %s
                 """,
@@ -45,12 +46,13 @@ def _update_campaign_stats(campaign_id: str, conn):
             if not result:
                 return
             
-            total, completed, failed, processing, pending = result
+            total, completed, failed, processing, pending, retry_scheduled = result
             total = int(total or 0)
             completed = int(completed or 0)
             failed = int(failed or 0)
             processing = int(processing or 0)
             pending = int(pending or 0)
+            retry_scheduled = int(retry_scheduled or 0)
             
             # Reconstruct JSONB stats
             stats_json = json.dumps({
@@ -58,7 +60,8 @@ def _update_campaign_stats(campaign_id: str, conn):
                 "completed": completed,
                 "failed": failed,
                 "processing": processing,
-                "pending": pending
+                "pending": pending,
+                "retry_scheduled": retry_scheduled
             })
 
             # Check if all leads are done
@@ -113,10 +116,10 @@ def mark_campaign_call_completed(campaign_id: str, lead_id: str, duration: int =
             cur.execute(
                 """
                 UPDATE campaign_numbers 
-                SET status = 'completed', called_at = %s
+                SET status = 'completed', called_at = %s, last_call_duration_seconds = %s, disposition = 'success'
                 WHERE id = %s AND campaign_id = %s
                 """,
-                (datetime.utcnow(), lead_id, campaign_id)
+                (datetime.utcnow(), duration, lead_id, campaign_id)
             )
             if cur.rowcount == 0:
                 logger.warning(f"[CampaignLifecycle] no campaign_numbers row updated for {lead_id}")
@@ -128,7 +131,7 @@ def mark_campaign_call_completed(campaign_id: str, lead_id: str, duration: int =
     finally:
         conn.close()
 
-def mark_campaign_call_failed(campaign_id: str, lead_id: str, reason: str = ""):
+def mark_campaign_call_failed(campaign_id: str, lead_id: str, reason: str = "", duration: int = 0):
     # Defensive guard: reject missing, placeholder, or preview IDs before any DB call.
     _invalid_campaign = (
         not campaign_id
@@ -142,27 +145,66 @@ def mark_campaign_call_failed(campaign_id: str, lead_id: str, reason: str = ""):
         )
         return
 
-    logger.info(f"[CampaignLifecycle] Marking lead failed campaign_id={campaign_id} lead_id={lead_id} reason={reason}")
+    logger.info(f"[CampaignLifecycle] Marking lead failed/retry campaign_id={campaign_id} lead_id={lead_id} reason={reason}")
     conn = get_db_connection()
     if not conn:
         return
         
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE campaign_numbers 
-                SET status = 'failed', called_at = %s
-                WHERE id = %s AND campaign_id = %s
-                """,
-                (datetime.utcnow(), lead_id, campaign_id)
-            )
+            # Fetch campaign rules and current lead attempts
+            cur.execute("SELECT retry_attempts, retry_delay_seconds FROM campaigns WHERE id = %s", (campaign_id,))
+            campaign_rules = cur.fetchone()
+            if not campaign_rules:
+                return
+            retry_attempts, retry_delay_seconds = campaign_rules
+            retry_attempts = retry_attempts or 3
+            retry_delay_seconds = retry_delay_seconds or 3600
+            
+            cur.execute("SELECT attempt_count FROM campaign_numbers WHERE id = %s", (lead_id,))
+            lead_info = cur.fetchone()
+            if not lead_info:
+                return
+            attempt_count = lead_info[0] or 1
+            
+            disposition = reason[:50] if reason else "failed"
+            
+            if attempt_count < retry_attempts:
+                # Schedule retry
+                cur.execute(
+                    """
+                    UPDATE campaign_numbers 
+                    SET status = 'retry_scheduled', 
+                        called_at = %s,
+                        next_retry_at = NOW() + (%s * interval '1 second'),
+                        failure_reason = %s,
+                        disposition = %s,
+                        last_call_duration_seconds = %s
+                    WHERE id = %s AND campaign_id = %s
+                    """,
+                    (datetime.utcnow(), retry_delay_seconds, reason, disposition, duration, lead_id, campaign_id)
+                )
+            else:
+                # Max retries reached, fail permanently
+                cur.execute(
+                    """
+                    UPDATE campaign_numbers 
+                    SET status = 'failed', 
+                        called_at = %s,
+                        failure_reason = %s,
+                        disposition = %s,
+                        last_call_duration_seconds = %s
+                    WHERE id = %s AND campaign_id = %s
+                    """,
+                    (datetime.utcnow(), reason, disposition, duration, lead_id, campaign_id)
+                )
+
             if cur.rowcount == 0:
                 logger.warning(f"[CampaignLifecycle] no campaign_numbers row updated for {lead_id}")
         # Update campaign stats
         _update_campaign_stats(campaign_id, conn)
         conn.commit()
     except Exception as e:
-        logger.error(f"Error failing campaign lead: {e}")
+        logger.error(f"Error failing/retrying campaign lead: {e}")
     finally:
         conn.close()

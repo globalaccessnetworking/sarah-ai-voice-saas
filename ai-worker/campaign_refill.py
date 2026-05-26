@@ -36,6 +36,26 @@ class CampaignRefillWorker:
         self.db_conn.autocommit = True
         logger.info(f"[CampaignRefill] Campaign Refill Worker initialized.")
 
+    def revert_leads(self, cursor, leads_list):
+        for lead in leads_list:
+            try:
+                cursor.execute("""
+                    UPDATE campaign_numbers 
+                    SET status = %s,
+                        attempt_count = %s,
+                        last_attempt_at = %s,
+                        next_retry_at = %s
+                    WHERE id = %s::uuid
+                """, (
+                    lead['status'],
+                    lead['attempt_count'],
+                    lead['last_attempt_at'],
+                    lead['next_retry_at'],
+                    lead['id']
+                ))
+            except Exception as rev_err:
+                logger.error(f"[CampaignRefill] Failed to revert state for lead {lead['id']}: {rev_err}")
+
     def get_db_cursor(self):
         try:
             if self.db_conn.closed:
@@ -99,7 +119,11 @@ class CampaignRefillWorker:
                     # Fetch pending numbers with row locking to prevent race conditions
                     cursor.execute("""
                         SELECT * FROM campaign_numbers 
-                        WHERE campaign_id = %s AND status = 'pending' 
+                        WHERE campaign_id = %s 
+                        AND (
+                            status = 'pending' 
+                            OR (status = 'retry_scheduled' AND next_retry_at <= NOW())
+                        )
                         ORDER BY id ASC
                         LIMIT %s
                         FOR UPDATE SKIP LOCKED
@@ -112,7 +136,7 @@ class CampaignRefillWorker:
                         # Completion check: check if all numbers are done
                         cursor.execute("""
                             SELECT COUNT(*) FROM campaign_numbers 
-                            WHERE campaign_id = %s AND status = 'pending'
+                            WHERE campaign_id = %s AND (status = 'pending' OR status = 'retry_scheduled')
                         """, (campaign_id,))
                         pending_count = cursor.fetchone()[0]
                         
@@ -132,7 +156,9 @@ class CampaignRefillWorker:
                     pending_ids = [number['id'] for number in pending_numbers]
                     cursor.execute("""
                         UPDATE campaign_numbers 
-                        SET status = 'processing'
+                        SET status = 'processing',
+                            attempt_count = attempt_count + 1,
+                            last_attempt_at = NOW()
                         WHERE id = ANY(%s::uuid[])
                     """, (pending_ids,))
                     
@@ -150,11 +176,7 @@ class CampaignRefillWorker:
                 agent = cursor.fetchone()
                 if not agent:
                     logger.error(f"[CampaignRefill] Agent {campaign['agent_id']} not found for campaign {campaign_id}. Reverting locks.")
-                    cursor.execute("""
-                        UPDATE campaign_numbers 
-                        SET status = 'pending'
-                        WHERE id = ANY(%s::uuid[])
-                    """, (pending_ids,))
+                    self.revert_leads(cursor, pending_numbers)
                     continue
                     
                 # Fetch SIP Trunk
@@ -168,11 +190,7 @@ class CampaignRefillWorker:
                 
                 if not trunk:
                     logger.error(f"[CampaignRefill] No SIP trunk available for campaign {campaign_id}. Reverting locks.")
-                    cursor.execute("""
-                        UPDATE campaign_numbers 
-                        SET status = 'pending'
-                        WHERE id = ANY(%s::uuid[])
-                    """, (pending_ids,))
+                    self.revert_leads(cursor, pending_numbers)
                     continue
 
                 # Enqueue the leads
@@ -189,12 +207,7 @@ class CampaignRefillWorker:
                         current_status = cursor.fetchone()
                         if not current_status or current_status[0] != 'running':
                             logger.info(f"[CampaignRefill] Campaign {campaign['name']} status is '{current_status[0] if current_status else 'deleted'}' (not 'running'). Halting enqueues.")
-                            revert_ids = [n['id'] for n in pending_numbers[index:]]
-                            cursor.execute("""
-                                UPDATE campaign_numbers 
-                                SET status = 'pending'
-                                WHERE id = ANY(%s::uuid[])
-                            """, (revert_ids,))
+                            self.revert_leads(cursor, pending_numbers[index:])
                             break
 
                     sip_call_to = normalize_phone(number['phone'])
@@ -249,12 +262,8 @@ class CampaignRefillWorker:
                         self.redis_client.lpush(QUEUE_NAME, json.dumps(payload))
                         enqueued_successfully.append(number['id'])
                     except Exception as redis_err:
-                        logger.error(f"[CampaignRefill] Redis enqueue failed for lead {number['id']}: {redis_err}. Reverting state to pending.")
-                        cursor.execute("""
-                            UPDATE campaign_numbers 
-                            SET status = 'pending'
-                            WHERE id = %s::uuid
-                        """, (number['id'],))
+                        logger.error(f"[CampaignRefill] Redis enqueue failed for lead {number['id']}: {redis_err}. Reverting state.")
+                        self.revert_leads(cursor, [number])
 
                 if enqueued_successfully:
                     logger.info(f"[CampaignRefill] Campaign {campaign['name']}: enqueued {len(enqueued_successfully)} leads successfully.")

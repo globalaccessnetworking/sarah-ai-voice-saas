@@ -20,6 +20,12 @@ interface Lead {
     companyName: string | null;
     status: string;
     calledAt: string | null;
+    attemptCount?: number;
+    lastAttemptAt?: string | null;
+    nextRetryAt?: string | null;
+    failureReason?: string | null;
+    disposition?: string | null;
+    lastCallDurationSeconds?: number | null;
     callLog: CallLog | null;
 }
 
@@ -113,7 +119,7 @@ export default function CampaignDetailsPage() {
         return matchesSearch && matchesStatus;
     });
 
-    const formatDuration = (seconds: number | undefined) => {
+    const formatDuration = (seconds: number | null | undefined) => {
         if (!seconds) return "-";
         const m = Math.floor(seconds / 60);
         const s = seconds % 60;
@@ -222,6 +228,7 @@ export default function CampaignDetailsPage() {
                         <option value="all">All Statuses</option>
                         <option value="pending">Pending</option>
                         <option value="processing">Processing</option>
+                        <option value="retry_scheduled">Retry Scheduled</option>
                         <option value="completed">Completed</option>
                         <option value="failed">Failed</option>
                         <option value="no_answer">No Answer</option>
@@ -239,6 +246,9 @@ export default function CampaignDetailsPage() {
                                     <th>Name</th>
                                     <th>Company</th>
                                     <th>Status</th>
+                                    <th>Attempts</th>
+                                    <th>Disposition</th>
+                                    <th>Next Retry</th>
                                     <th>Duration</th>
                                     <th>Called At</th>
                                     <th className="text-right">Transcript</th>
@@ -247,7 +257,7 @@ export default function CampaignDetailsPage() {
                             <tbody>
                                 {filteredLeads.length === 0 ? (
                                     <tr>
-                                        <td colSpan={7} className="text-center py-8 text-zinc-500">
+                                        <td colSpan={10} className="text-center py-8 text-zinc-500">
                                             No leads match the current filters.
                                         </td>
                                     </tr>
@@ -262,13 +272,19 @@ export default function CampaignDetailsPage() {
                                                     lead.status === 'completed' ? 'badge-success' :
                                                     lead.status === 'pending' ? 'badge-neutral' :
                                                     lead.status === 'processing' ? 'badge-warning' :
+                                                    lead.status === 'retry_scheduled' ? 'badge-info' :
                                                     'badge-danger'
                                                 }`}>
                                                     {lead.status.replace(/_/g, ' ').toUpperCase()}
                                                 </span>
                                             </td>
+                                            <td className="text-zinc-400 text-center">{lead.attemptCount || 0}</td>
+                                            <td className="text-zinc-400">{lead.disposition || '-'}</td>
                                             <td className="text-zinc-400">
-                                                {formatDuration(lead.callLog?.durationSeconds)}
+                                                {lead.status === 'retry_scheduled' && lead.nextRetryAt ? new Date(lead.nextRetryAt).toLocaleString() : '-'}
+                                            </td>
+                                            <td className="text-zinc-400">
+                                                {formatDuration(lead.callLog?.durationSeconds || lead.lastCallDurationSeconds)}
                                             </td>
                                             <td className="text-zinc-400 whitespace-nowrap">
                                                 {lead.calledAt ? new Date(lead.calledAt).toLocaleString() : '-'}
@@ -340,11 +356,47 @@ export default function CampaignDetailsPage() {
                                         selectedLead.status === 'completed' ? 'badge-success' :
                                         selectedLead.status === 'pending' ? 'badge-neutral' :
                                         selectedLead.status === 'processing' ? 'badge-warning' :
+                                        selectedLead.status === 'retry_scheduled' ? 'badge-info' :
                                         'badge-danger'
                                     }`}>
                                         {selectedLead.status.replace(/_/g, ' ').toUpperCase()}
                                     </span>
+                                    {(selectedLead.attemptCount ?? 0) > 0 && (
+                                        <span className="text-sm text-zinc-500">
+                                            Attempt {selectedLead.attemptCount}
+                                        </span>
+                                    )}
                                 </div>
+                                {selectedLead.failureReason && (
+                                    <div className="mt-2 text-sm">
+                                        <span className="text-zinc-500">Failure Reason: </span>
+                                        <span className="text-red-400">{selectedLead.failureReason}</span>
+                                    </div>
+                                )}
+                                {selectedLead.disposition && (
+                                    <div className="mt-1 text-sm">
+                                        <span className="text-zinc-500">Disposition: </span>
+                                        <span className="text-zinc-300">{selectedLead.disposition}</span>
+                                    </div>
+                                )}
+                                {selectedLead.status === 'retry_scheduled' && selectedLead.nextRetryAt && (
+                                    <div className="mt-1 text-sm">
+                                        <span className="text-zinc-500">Next Retry At: </span>
+                                        <span className="text-blue-400">{new Date(selectedLead.nextRetryAt).toLocaleString()}</span>
+                                    </div>
+                                )}
+                                {selectedLead.lastAttemptAt && (
+                                    <div className="mt-1 text-sm">
+                                        <span className="text-zinc-500">Last Attempt At: </span>
+                                        <span className="text-zinc-300">{new Date(selectedLead.lastAttemptAt).toLocaleString()}</span>
+                                    </div>
+                                )}
+                                {(selectedLead.callLog?.durationSeconds || selectedLead.lastCallDurationSeconds) ? (
+                                    <div className="mt-1 text-sm">
+                                        <span className="text-zinc-500">Call Duration: </span>
+                                        <span className="text-zinc-300">{formatDuration(selectedLead.callLog?.durationSeconds || selectedLead.lastCallDurationSeconds)}</span>
+                                    </div>
+                                ) : null}
                             </div>
 
                             {/* Call Summary */}

@@ -431,7 +431,13 @@ export const campaignNumbers = pgTable("campaign_numbers", {
     companyName: varchar("company_name", { length: 255 }),
     status: varchar("status", { length: 50 }).default("pending"),
     leadData: jsonb("lead_data"),
-    calledAt: timestamp("called_at", { withTimezone: true })
+    calledAt: timestamp("called_at", { withTimezone: true }),
+    attemptCount: integer("attempt_count").default(0),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+    failureReason: varchar("failure_reason", { length: 255 }),
+    disposition: varchar("disposition", { length: 50 }),
+    lastCallDurationSeconds: integer("last_call_duration_seconds")
 });
 
 // --- ViciDial Mapping ---
