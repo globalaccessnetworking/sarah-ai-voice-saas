@@ -35,12 +35,28 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         const leadDataKeys = new Set<string>();
         
         const mappedLeads = leads.map(lead => {
+            const isCompleted = lead.status === 'completed' || lead.disposition === 'success';
+            
             // Match log based on prioritized stable keys & robust fallbacks
             const leadLogs = logs.filter((log: any) => {
                 const meta = log.metadata || {};
-                const roomName = log.room_name || '';
-                const phone = lead.phone || '';
+                const roomName = String(log.room_name || '');
+                const phone = String(lead.phone || '');
+                const fromNum = String(log.from_number || '');
+                const toNum = String(log.to_number || '');
                 
+                // Normalization helper for clean phone comparisons (strips +, 92, 0)
+                const clean = (num: string) => {
+                    let n = num.replace(/[^0-9]/g, '');
+                    while (n.startsWith("92") || n.startsWith("0")) {
+                        if (n.startsWith("92")) n = n.slice(2);
+                        else if (n.startsWith("0")) n = n.slice(1);
+                    }
+                    return n;
+                };
+
+                const cleanLeadPhone = clean(phone);
+
                 // Priority 1: metadata.lead_id = lead.id
                 if (meta.lead_id === lead.id) return true;
                 
@@ -48,13 +64,18 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
                 if (meta.external_record_id === lead.id) return true;
                 
                 // Priority 3: metadata.campaign_id = campaign.id AND room_name includes phone
-                if (meta.campaign_id === campaignId && phone && roomName.includes(phone)) return true;
+                if (meta.campaign_id === campaignId && cleanLeadPhone && clean(roomName).includes(cleanLeadPhone)) return true;
                 
                 // Priority 4: room_name includes lead.id
                 if (roomName.includes(lead.id)) return true;
                 
                 // Priority 5: room_name includes phone
-                if (phone && roomName.includes(phone)) return true;
+                if (cleanLeadPhone && clean(roomName).includes(cleanLeadPhone)) return true;
+
+                // Priority 6 (Fallback): log.to_number or log.from_number matches phone
+                if (cleanLeadPhone && (clean(toNum).includes(cleanLeadPhone) || clean(fromNum).includes(cleanLeadPhone))) {
+                    return true;
+                }
                 
                 return false;
             });
@@ -70,6 +91,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
             return {
                 ...lead,
+                failureReason: isCompleted ? null : lead.failureReason,
+                nextRetryAt: isCompleted ? null : lead.nextRetryAt,
                 callLogId: latestLog?.id || '',
                 summary: latestLog?.summary || '',
                 duration: latestLog?.duration_seconds || lead.lastCallDurationSeconds || 0
