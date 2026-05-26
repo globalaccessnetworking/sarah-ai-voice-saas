@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Save, Upload, FileText, Phone, Loader2, XCircle, CheckCircle2, ChevronRight, ChevronLeft, AlertCircle, Users } from "lucide-react";
+import { ArrowLeft, Save, FileText, Phone, Loader2, XCircle, CheckCircle2, ChevronRight, ChevronLeft, AlertCircle, Users } from "lucide-react";
 import Link from "next/link";
-import Papa from "papaparse";
+import LeadImportMapper from "@/components/campaigns/LeadImportMapper";
+import type { ParsedLead } from "@/lib/leadImportUtils";
 
 export default function CreateCampaignPage() {
     const router = useRouter();
@@ -43,10 +44,9 @@ export default function CreateCampaignPage() {
         vicidialIngroup: "",
     });
 
-    const [numbers, setNumbers] = useState<{ phone: string, name?: string, companyName?: string, email?: string }[]>([]);
+    const [numbers, setNumbers] = useState<{ phone: string, name?: string, companyName?: string, email?: string, leadData?: Record<string, string> }[]>([]);
     const [manualNumber, setManualNumber] = useState("");
     const [manualName, setManualName] = useState("");
-    const [csvFile, setCsvFile] = useState<File | null>(null);
 
     useEffect(() => {
         const fetchData = async () => {
@@ -159,44 +159,15 @@ export default function CreateCampaignPage() {
         setNumbers(numbers.filter((_, i) => i !== index));
     };
 
-    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (file) {
-            setCsvFile(file);
-            Papa.parse(file, {
-                header: true,
-                skipEmptyLines: true,
-                complete: function (results) {
-                    const newNumbers: any[] = [];
-                    results.data.forEach((row: any) => {
-                        const phone = row.phone || row.Phone || row.PHONE || row.phoneNumber || row['Phone Number'];
-                        if (phone) {
-                            const name = row.name || row.Name || row.NAME || "";
-                            const companyName = row.company || row.Company || row.companyName || "";
-                            const email = row.email || row.Email || "";
-                            
-                            const leadData = { ...row };
-                            
-                            newNumbers.push({
-                                phone: String(phone).trim(),
-                                name,
-                                companyName,
-                                email,
-                                leadData
-                            });
-                        }
-                    });
-
-                    if (newNumbers.length > 0) {
-                        setNumbers([...numbers, ...newNumbers]);
-                        setCsvFile(null);
-                        e.target.value = '';
-                    } else {
-                        alert("Could not find a 'phone' column in the CSV file.");
-                    }
-                }
-            });
-        }
+    /** Called by LeadImportMapper when the user clicks "Import X Valid Leads" */
+    const handleImportComplete = (leads: ParsedLead[]) => {
+        const mapped = leads.map((l) => ({
+            phone: l.phone,
+            name: l.name || undefined,
+            companyName: l.company_name || undefined,
+            leadData: l.lead_data,
+        }));
+        setNumbers((prev) => [...prev, ...mapped]);
     };
 
     const renderStepIndicator = () => {
@@ -475,14 +446,12 @@ export default function CreateCampaignPage() {
                                                     <button onClick={handleAddManual} disabled={!manualNumber} className="btn-secondary w-full">Add Lead</button>
                                                 </div>
                                             </div>
-                                            <div className="p-6 bg-zinc-900 border border-zinc-800 border-dashed rounded-lg flex flex-col items-center justify-center text-center">
-                                                <Upload size={24} className="text-zinc-500 mb-2" />
-                                                <h3 className="text-sm font-medium text-white">Import from CSV</h3>
-                                                <p className="text-xs text-zinc-400 mt-1 mb-4 max-w-[200px]">Upload a CSV file containing at least a 'phone' column.</p>
-                                                <label className="btn-secondary cursor-pointer">
-                                                    <span>Browse Files</span>
-                                                    <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
-                                                </label>
+                                            <div>
+                                                <LeadImportMapper
+                                                    openingMessage={formData.openingMessage}
+                                                    onImportComplete={handleImportComplete}
+                                                    onClear={() => setNumbers([])}
+                                                />
                                             </div>
                                         </div>
                                         <div className="flex flex-col gap-3 h-full max-h-[500px]">
