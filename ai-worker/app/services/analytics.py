@@ -72,7 +72,7 @@ async def process_post_call_analytics(room_name: str, transcript: list, metadata
             final_payload["summary_error"] = summary_error
         
         # Update the call record in the DB/Redis
-        complete_call_record(room_name, final_payload)
+        complete_call_record(room_name=room_name, final_payload=final_payload)
         
         # 4. Sync with Complaints Table (Only if sentiment_enabled)
         if sentiment_enabled:

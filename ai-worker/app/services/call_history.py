@@ -220,9 +220,17 @@ def save_transcription(call_id_or_room: str, transcript: list):
     finally:
         conn.close()
 
-def complete_call_record(call_id_or_room: str, final_payload: dict):
+def complete_call_record(call_id_or_room: str = None, final_payload: dict = None, room_name: str = None, call_id: str = None, **kwargs):
     """Finalizes a call record defensively, merging metadata and preventing downgrades."""
-    logger.info(f"Completing call record for {call_id_or_room}")
+    # Robustly resolve final_payload
+    if final_payload is None:
+        final_payload = kwargs.get("final_payload") or {}
+
+    # Extract all possible identifiers
+    candidate_id = call_id or kwargs.get("id")
+    candidate_room = room_name
+
+    logger.info(f"Completing call record for call_id_or_room={call_id_or_room}, room_name={room_name}, call_id={call_id}")
     conn = get_db_connection()
     if not conn:
         return
@@ -230,21 +238,49 @@ def complete_call_record(call_id_or_room: str, final_payload: dict):
     try:
         with conn.cursor() as cur:
             # 1. Resolve canonical row
-            cur.execute("SELECT id, room_name FROM call_logs WHERE id = %s", (call_id_or_room,))
-            row = cur.fetchone()
-            
             canonical_id = None
-            room_name = None
-            if row:
-                canonical_id = row[0]
-                room_name = row[1]
-            else:
-                room_name = call_id_or_room
-                canonical_id = find_canonical_row_for_room(cur, room_name)
+            resolved_room_name = None
+
+            # First, check by explicitly provided IDs
+            id_candidates = []
+            if candidate_id:
+                id_candidates.append(candidate_id)
+            if call_id_or_room:
+                id_candidates.append(call_id_or_room)
+            
+            for cid in id_candidates:
+                if cid:
+                    cur.execute("SELECT id, room_name FROM call_logs WHERE id = %s", (cid,))
+                    row = cur.fetchone()
+                    if row:
+                        canonical_id = row[0]
+                        resolved_room_name = row[1]
+                        break
+
+            # Next, check by room name if ID not found or if room name was explicitly provided
+            if not canonical_id:
+                room_candidates = []
+                if candidate_room:
+                    room_candidates.append(candidate_room)
+                if call_id_or_room:
+                    room_candidates.append(call_id_or_room)
+                
+                for rname in room_candidates:
+                    if rname:
+                        canonical_id = find_canonical_row_for_room(cur, rname)
+                        if canonical_id:
+                            resolved_room_name = rname
+                            break
+
+            # Print explicit log exactly as requested:
+            # [CALL_LOG_PERSIST] complete_call_record args_resolved id=<id> room_name=<room_name>
+            logger.info(f"[CALL_LOG_PERSIST] complete_call_record args_resolved id={canonical_id} room_name={resolved_room_name}")
 
             if not canonical_id:
-                logger.warning(f"No existing call log found to complete for {call_id_or_room}")
+                logger.warning(f"No existing call log found to complete for call_id_or_room={call_id_or_room}, room_name={room_name}, call_id={call_id}")
                 return
+
+            room_name = resolved_room_name
 
             # 2. Acquire transaction lock
             if room_name:

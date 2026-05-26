@@ -974,6 +974,7 @@ class CallTracker:
             }
 
             call_history.complete_call_record(
+                call_id=self.call_id,
                 room_name=self.room_name,
                 final_payload=final_payload
             )
@@ -5273,24 +5274,27 @@ The opening message has already been delivered to the user automatically by the 
         # V23.36: Authoritative Disconnect Handlers (Ghost Room Fix)
         @ctx.room.on("disconnected")
         def on_disconnected(reason):
-            logger.info(f"≡ƒÅé≡ƒÅ╗ SYNC: Room disconnected ({reason}). Finalizing database record.")
+            logger.info(f"🏁 SYNC: Room disconnected ({reason}). Finalizing database record.")
+            setattr(session, "room_disconnected_flag", True)
+            setattr(session, "_call_ending", True)
             try:
                 from app.services.call_history import complete_call_record
-                complete_call_record(ctx.room.name, {"status": "completed", "reason": str(reason), "duration": 0})
+                complete_call_record(room_name=ctx.room.name, final_payload={"status": "completed", "reason": str(reason), "duration": 0})
             except Exception as e:
-                logger.error(f"≡ƒÜ¿ SYNC: Database cleanup failed: {e}")
+                logger.error(f"🚨 SYNC: Database cleanup failed: {e}")
 
         @ctx.room.on("participant_disconnected")
         def on_p_disconnected(participant):
             if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP or str(participant.identity).startswith("sip_"):
-                logger.info(f"≡ƒÅé≡ƒÅ╗ SYNC: SIP Participant {participant.identity} disconnected. Finalizing.")
+                logger.info(f"🏁 SYNC: SIP Participant {participant.identity} disconnected. Finalizing.")
                 setattr(session, "_call_ending", True)
+                setattr(session, "sip_participant_disconnected", True)
                 logger.info("[CALL_END] SIP participant disconnected; cancelling active speech")
                 try:
                     from app.services.call_history import complete_call_record
-                    complete_call_record(ctx.room.name, {"status": "completed", "reason": "Participant left", "duration": 0})
+                    complete_call_record(room_name=ctx.room.name, final_payload={"status": "completed", "reason": "Participant left", "duration": 0})
                 except Exception as e:
-                    logger.error(f"≡ƒÜ¿ SYNC: Database cleanup failed: {e}")
+                    logger.error(f"🚨 SYNC: Database cleanup failed: {e}")
 
         logger.info("≡ƒöì SYNC_HOOKS_ACTIVE: Session Translation engine armed.")
 
@@ -5516,9 +5520,10 @@ The opening message has already been delivered to the user automatically by the 
                     last_known_sip_status = None
                     
                     while time.time() - ts_wait_start < max_wait:
-                        is_call_ending = getattr(session, "_call_ending", False)
+                        is_call_ending = getattr(session, "_call_ending", False) or getattr(session, "room_disconnected_flag", False)
                         is_disconnected = (
                             getattr(session, "sip_participant_disconnected", False) or
+                            getattr(session, "room_disconnected_flag", False) or
                             (ctx.room and (
                                 str(getattr(ctx.room, "connection_state", "")).lower() == "disconnected" or
                                 "disconnected" in str(getattr(ctx.room, "connection_state", "")).lower()
