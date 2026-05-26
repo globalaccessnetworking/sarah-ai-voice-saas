@@ -311,6 +311,18 @@ class OutboundDialer:
             response = await lkapi.sip.create_sip_participant(request)
             sip_call_id = getattr(response, "sip_call_id", "")
             
+            logger.info(
+                f"[SIP_DISPATCH_DIAGNOSTICS] "
+                f"sip_call_to={sip_call_to} "
+                f"sip_trunk_id={trunk_id} "
+                f"room_name={room_name} "
+                f"sip_call_id={sip_call_id} "
+                f"metadata_type={payload.get('type')} "
+                f"metadata_source={payload.get('source')} "
+                f"campaign_id={campaign_id} "
+                f"lead_id={payload.get('lead_id') or payload.get('external_record_id')}"
+            )
+            
             logger.info(f"SIP Call successfully dispatched. SIP ID: {sip_call_id}")
             
             # Step 2: Explicitly Dispatch Agent
@@ -324,6 +336,14 @@ class OutboundDialer:
             )
             dispatch = await lkapi.agent_dispatch.create_dispatch(dispatch_request)
             dispatch_id = getattr(dispatch, "id", "") or getattr(dispatch, "dispatch_id", "")
+            
+            logger.info(
+                f"[AGENT_DISPATCH_DIAGNOSTICS] "
+                f"dispatch_id={dispatch_id} "
+                f"agent_name={dispatch_agent_name} "
+                f"room_name={room_name} "
+                f"sip_call_id={sip_call_id}"
+            )
             
             logger.info(f"Agent explicitly dispatched. Dispatch ID: {dispatch_id}")
             

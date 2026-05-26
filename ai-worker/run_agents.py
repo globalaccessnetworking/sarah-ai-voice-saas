@@ -5449,8 +5449,20 @@ The opening message has already been delivered to the user automatically by the 
                     last_known_sip_status = None
                     
                     while time.time() - ts_wait_start < max_wait:
-                        if getattr(session, "_call_ending", False) or getattr(session, "sip_participant_disconnected", False):
-                            logger.info("[SIP_ANSWER_WAIT] Break wait: session call ending or participant disconnected")
+                        is_call_ending = getattr(session, "_call_ending", False)
+                        is_disconnected = (
+                            getattr(session, "sip_participant_disconnected", False) or
+                            (ctx.room and (
+                                str(getattr(ctx.room, "connection_state", "")).lower() == "disconnected" or
+                                "disconnected" in str(getattr(ctx.room, "connection_state", "")).lower()
+                            ))
+                        )
+                        
+                        if is_call_ending:
+                            logger.info("[SIP_ANSWER_WAIT] break reason=call_ending")
+                            break
+                        if is_disconnected:
+                            logger.info("[SIP_ANSWER_WAIT] break reason=room_disconnected")
                             break
                             
                         remote_parts = list(ctx.room.remote_participants.values())
