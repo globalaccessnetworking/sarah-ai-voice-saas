@@ -17,8 +17,19 @@ async def process_post_call_analytics(room_name: str, transcript: list, metadata
         transcript (list): List of transcription segments [{"speaker": "...", "text": "...", "timestamp": "..."}].
         metadata (dict): Additional call metadata (duration, caller_id, agent_slug, etc.).
     """
+    # Defensive metadata
+    meta = metadata or {}
+
     if not transcript:
         logger.info(f"No transcript for room {room_name}, skipping analytics.")
+        try:
+            complete_call_record(room_name=room_name, final_payload={
+                **meta,
+                "summary": "Analytics skipped (No conversation transcript).",
+                "processed_at": datetime.utcnow().isoformat()
+            })
+        except Exception as e:
+            logger.error(f"Failed to update empty transcript summary placeholder: {e}")
         return
 
     logger.info(f"Starting post-call analytics for {room_name} ({len(transcript)} segments)")

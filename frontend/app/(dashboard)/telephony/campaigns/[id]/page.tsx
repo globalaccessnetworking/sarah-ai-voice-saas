@@ -29,6 +29,7 @@ interface Lead {
     disposition?: string | null;
     lastCallDurationSeconds?: number | null;
     callLog: CallLog | null;
+    qa?: any;
 }
 
 interface CampaignStats {
@@ -518,24 +519,88 @@ export default function CampaignDetailsPage() {
                                 <div className="grid grid-cols-3 gap-2.5 text-center">
                                     <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-850/80">
                                         <span className="text-[9px] text-zinc-500 uppercase tracking-widest block font-medium">Likely Answered</span>
-                                        <span className={`text-xs font-bold block mt-1.5 ${scanAnswered(selectedLead) ? "text-emerald-400" : "text-zinc-500"}`}>
-                                            {scanAnswered(selectedLead) ? "YES" : "NO"}
+                                        <span className={`text-xs font-bold block mt-1.5 ${
+                                            (selectedLead.qa ? selectedLead.qa.likely_answered : scanAnswered(selectedLead)) ? "text-emerald-400" : "text-zinc-500"
+                                        }`}>
+                                            {(selectedLead.qa ? selectedLead.qa.likely_answered : scanAnswered(selectedLead)) ? "YES" : "NO"}
                                         </span>
                                     </div>
                                     <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-850/80">
                                         <span className="text-[9px] text-zinc-500 uppercase tracking-widest block font-medium">Likely Interested</span>
-                                        <span className={`text-xs font-bold block mt-1.5 ${scanInterested(selectedLead) ? "text-emerald-400" : "text-zinc-500"}`}>
-                                            {scanInterested(selectedLead) ? "YES" : "NO"}
+                                        <span className={`text-xs font-bold block mt-1.5 ${
+                                            (selectedLead.qa ? selectedLead.qa.likely_interested : scanInterested(selectedLead)) ? "text-emerald-400" : "text-zinc-500"
+                                        }`}>
+                                            {(selectedLead.qa ? selectedLead.qa.likely_interested : scanInterested(selectedLead)) ? "YES" : "NO"}
                                         </span>
                                     </div>
                                     <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-850/80">
                                         <span className="text-[9px] text-zinc-500 uppercase tracking-widest block font-medium">Appt Mentioned</span>
-                                        <span className={`text-xs font-bold block mt-1.5 ${scanAppointment(selectedLead) ? "text-blue-400" : "text-zinc-500"}`}>
-                                            {scanAppointment(selectedLead) ? "YES" : "NO"}
+                                        <span className={`text-xs font-bold block mt-1.5 ${
+                                            (selectedLead.qa ? selectedLead.qa.appointment_mentioned : scanAppointment(selectedLead)) ? "text-blue-400" : "text-zinc-500"
+                                        }`}>
+                                            {(selectedLead.qa ? selectedLead.qa.appointment_mentioned : scanAppointment(selectedLead)) ? "YES" : "NO"}
                                         </span>
                                     </div>
                                 </div>
                             </div>
+
+                            {/* Post-Call Intelligence Card */}
+                            {selectedLead.qa && selectedLead.qa.likely_answered && (
+                                <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3.5 shadow-sm">
+                                    <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800/80 pb-2">Post-Call Intelligence</h3>
+                                    
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-850/80 flex flex-col justify-center">
+                                            <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-semibold block">Lead Quality Score</span>
+                                            <div className="flex items-baseline gap-1 mt-1">
+                                                <span className={`text-2xl font-bold ${
+                                                    selectedLead.qa.lead_quality_score >= 70 ? 'text-emerald-400' :
+                                                    selectedLead.qa.lead_quality_score >= 40 ? 'text-amber-400' :
+                                                    'text-red-400'
+                                                }`}>{selectedLead.qa.lead_quality_score}</span>
+                                                <span className="text-[10px] text-zinc-500">/ 100</span>
+                                            </div>
+                                        </div>
+                                        
+                                        <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-850/80 flex flex-col justify-center">
+                                            <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-semibold block">Follow-up Needed</span>
+                                            <span className={`text-xs font-bold block mt-1.5 ${
+                                                (selectedLead.qa.appointment_mentioned || selectedLead.qa.likely_interested || selectedLead.qa.callback_requested) ? "text-emerald-400" : "text-zinc-500"
+                                            }`}>
+                                                {(selectedLead.qa.appointment_mentioned || selectedLead.qa.likely_interested || selectedLead.qa.callback_requested) ? "YES (Priority)" : "NO"}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-2 gap-3.5 text-sm">
+                                        <div className="flex flex-col gap-0.5">
+                                            <span className="text-[9px] text-zinc-500 uppercase font-semibold">Objection Detected</span>
+                                            <span className={`text-xs font-semibold ${selectedLead.qa.objection_detected ? "text-amber-400" : "text-zinc-400"}`}>
+                                                {selectedLead.qa.objection_detected ? "YES" : "NO"}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-col gap-0.5">
+                                            <span className="text-[9px] text-zinc-500 uppercase font-semibold">Callback Requested</span>
+                                            <span className={`text-xs font-semibold ${selectedLead.qa.callback_requested ? "text-emerald-400" : "text-zinc-400"}`}>
+                                                {selectedLead.qa.callback_requested ? "YES" : "NO"}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-col gap-0.5 col-span-2">
+                                            <span className="text-[9px] text-zinc-500 uppercase font-semibold">DNC Requested</span>
+                                            <span className={`text-xs font-semibold ${selectedLead.qa.do_not_call_requested ? "text-red-400" : "text-zinc-400"}`}>
+                                                {selectedLead.qa.do_not_call_requested ? "YES (Add to Do-Not-Call)" : "NO"}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="flex flex-col gap-1 text-sm border-t border-zinc-800/60 pt-3">
+                                        <span className="text-[9px] text-zinc-500 uppercase font-semibold">Recommended Next Action</span>
+                                        <span className="text-blue-400 font-medium text-xs bg-blue-500/5 border border-blue-500/10 p-2.5 rounded-lg">
+                                            {selectedLead.qa.recommended_next_action}
+                                        </span>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Call Recording Player */}
                             <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 shadow-sm">
@@ -648,37 +713,124 @@ export default function CampaignDetailsPage() {
                             <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl flex flex-col min-h-[350px] shadow-sm">
                                 <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800/80 p-4 pb-2.5">Call Conversation Transcript</h3>
                                 <div className="p-4 flex flex-col gap-3.5">
-                                    {selectedLead.callLog?.transcript && Array.isArray(selectedLead.callLog.transcript) && selectedLead.callLog.transcript.length > 0 ? (
-                                        selectedLead.callLog.transcript.map((msg: any, i: number) => {
-                                            const role = msg?.role || 'system';
-                                            const isAgent = role === 'agent' || role === 'assistant';
-                                            const isUser = role === 'user';
+                                    {selectedLead.callLog?.transcript ? (
+                                        (() => {
+                                            let segments = [];
+                                            if (Array.isArray(selectedLead.callLog.transcript)) {
+                                                segments = selectedLead.callLog.transcript;
+                                            } else if (typeof selectedLead.callLog.transcript === 'string') {
+                                                try {
+                                                    const parsed = JSON.parse(selectedLead.callLog.transcript);
+                                                    if (Array.isArray(parsed)) segments = parsed;
+                                                } catch(e) {}
+                                            }
                                             
-                                            // Secure text parsing helper
-                                            let content = "";
-                                            if (typeof msg.content === 'string') {
-                                                content = msg.content;
-                                            } else if (msg.content && typeof msg.content === 'object' && msg.content.text) {
-                                                content = msg.content.text;
-                                            } else {
-                                                content = JSON.stringify(msg.content || msg);
+                                            if (segments.length === 0) {
+                                                return (
+                                                    <div className="text-zinc-500 italic text-center py-10 text-sm">
+                                                        No chat transcription available for this call.
+                                                    </div>
+                                                );
                                             }
 
-                                            return (
-                                                <div key={i} className={`flex flex-col gap-1.5 max-w-[85%] ${isAgent ? 'self-start' : isUser ? 'self-end' : 'self-center w-full'}`}>
-                                                    <span className={`text-[9px] uppercase font-bold tracking-wider ${isAgent ? 'text-blue-500' : isUser ? 'text-emerald-500 self-end' : 'text-zinc-500 text-center'}`}>
-                                                        {role}
-                                                    </span>
-                                                    <div className={`p-3 rounded-2xl text-sm ${
-                                                        isAgent ? 'bg-blue-600/10 border border-blue-500/25 text-zinc-200 rounded-tl-sm' :
-                                                        isUser ? 'bg-emerald-600/10 border border-emerald-500/25 text-zinc-200 rounded-tr-sm' :
-                                                        'bg-zinc-800/60 text-zinc-400 italic text-center w-full rounded-lg'
-                                                    }`}>
-                                                        {content}
+                                            return segments.map((msg: any, i: number) => {
+                                                const rawSpeaker = String(msg?.speaker || msg?.role || 'system').toLowerCase();
+                                                
+                                                // Standardize speaker labels
+                                                let isAgent = false;
+                                                let isUser = false;
+                                                let isTool = false;
+                                                let isHandoff = false;
+                                                let isSystem = false;
+                                                
+                                                if (rawSpeaker === 'assistant' || rawSpeaker === 'agent' || rawSpeaker === 'ai') {
+                                                    isAgent = true;
+                                                } else if (rawSpeaker === 'user' || rawSpeaker === 'caller' || rawSpeaker === 'customer' || rawSpeaker === 'human') {
+                                                    isUser = true;
+                                                } else if (rawSpeaker === 'tool' || rawSpeaker === 'function') {
+                                                    isTool = true;
+                                                } else if (rawSpeaker === 'handoff') {
+                                                    isHandoff = true;
+                                                } else {
+                                                    isSystem = true;
+                                                }
+                                                
+                                                let label = "System";
+                                                if (isAgent) label = "Agent";
+                                                else if (isUser) label = "Caller";
+                                                else if (isTool) label = "System / Tool";
+                                                
+                                                // Parse content defensively
+                                                let content = "";
+                                                if (msg.text) {
+                                                    content = msg.text;
+                                                } else if (typeof msg.content === 'string') {
+                                                    content = msg.content;
+                                                } else if (msg.content && typeof msg.content === 'object' && msg.content.text) {
+                                                    content = msg.content.text;
+                                                } else {
+                                                    content = JSON.stringify(msg.content || msg);
+                                                }
+
+                                                // Format timestamp
+                                                let timeStr = "";
+                                                if (msg.timestamp) {
+                                                    try {
+                                                        timeStr = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                                                    } catch(e) {}
+                                                }
+
+                                                if (isTool) {
+                                                    return (
+                                                        <div key={i} className="bg-zinc-950 border border-zinc-850 rounded-xl p-3.5 text-xs text-left">
+                                                            <div className="flex justify-between items-center mb-1.5">
+                                                                <span className="font-bold text-blue-400 uppercase tracking-widest text-[10px]">Tool Execution: {msg.tool_name}</span>
+                                                                {timeStr && <span className="text-[9px] text-zinc-500 font-mono">{timeStr}</span>}
+                                                            </div>
+                                                            <div className="grid grid-cols-1 gap-2">
+                                                                <div className="bg-zinc-900/50 p-2 rounded-lg border border-zinc-850">
+                                                                    <span className="text-[9px] text-zinc-500 uppercase font-bold block mb-0.5">Arguments</span>
+                                                                    <pre className="text-[10px] text-zinc-300 font-mono overflow-x-auto whitespace-pre-wrap">{JSON.stringify(msg.args || {}, null, 2)}</pre>
+                                                                </div>
+                                                                <div className="bg-zinc-900/50 p-2 rounded-lg border border-zinc-850">
+                                                                    <span className="text-[9px] text-zinc-500 uppercase font-bold block mb-0.5">Result</span>
+                                                                    <pre className="text-[10px] text-zinc-300 font-mono overflow-x-auto whitespace-pre-wrap">{JSON.stringify(msg.result || {}, null, 2)}</pre>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }
+
+                                                if (isHandoff) {
+                                                    return (
+                                                        <div key={i} className="flex justify-center my-1">
+                                                            <div className="bg-amber-500/5 border border-amber-500/10 rounded-full px-4 py-1.5 flex items-center gap-2 text-[10px] font-bold text-amber-400 uppercase tracking-wider">
+                                                                Call Transfer: {msg.from_agent} → {msg.to_agent}
+                                                                {msg.reason && <span className="text-[9px] text-amber-400/60 lowercase italic font-normal">({msg.reason})</span>}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }
+
+                                                return (
+                                                    <div key={i} className={`flex flex-col gap-1 max-w-[85%] ${isAgent ? 'self-start text-left' : isUser ? 'self-end text-right' : 'self-center w-full text-center'}`}>
+                                                        <div className={`flex items-baseline gap-2 ${isAgent ? 'flex-row' : 'flex-row-reverse'}`}>
+                                                            <span className={`text-[9px] uppercase font-bold tracking-wider ${isAgent ? 'text-blue-500' : isUser ? 'text-emerald-500' : 'text-zinc-500'}`}>
+                                                                {label}
+                                                            </span>
+                                                            {timeStr && <span className="text-[8px] text-zinc-500 font-mono">{timeStr}</span>}
+                                                        </div>
+                                                        <div className={`p-3 rounded-2xl text-sm leading-relaxed text-left ${
+                                                            isAgent ? 'bg-blue-600/10 border border-blue-500/25 text-zinc-200 rounded-tl-sm' :
+                                                            isUser ? 'bg-emerald-600/10 border border-emerald-500/25 text-zinc-200 rounded-tr-sm' :
+                                                            'bg-zinc-800/60 text-zinc-400 italic text-center w-full rounded-lg'
+                                                        }`}>
+                                                            {content}
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            );
-                                        })
+                                                );
+                                            });
+                                        })()
                                     ) : (
                                         <div className="text-zinc-500 italic text-center py-10 text-sm">
                                             {selectedLead.callLog ? "No chat transcription available for this call." : "Call hasn't been placed yet."}

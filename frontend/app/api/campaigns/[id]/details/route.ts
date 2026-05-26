@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@/db';
 import { eq, desc, sql } from 'drizzle-orm';
+import { computeQAInsights } from '@/lib/qa_helper';
 
 const { campaigns, campaignNumbers } = schema;
 
@@ -81,18 +82,23 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
             // Due to query sorting by created_at DESC, first element is the latest call log
             const latestLog = leadLogs.length > 0 ? leadLogs[0] : null;
 
+            const callLogData = latestLog ? {
+                id: latestLog.id,
+                status: latestLog.status,
+                durationSeconds: latestLog.duration_seconds,
+                transcript: latestLog.transcript,
+                summary: latestLog.summary,
+                recordingUrl: latestLog.recording_url
+            } : null;
+
+            const qa = computeQAInsights(lead, callLogData);
+
             return {
                 ...lead,
                 failureReason: isCompleted ? null : lead.failureReason,
                 nextRetryAt: isCompleted ? null : lead.nextRetryAt,
-                callLog: latestLog ? {
-                    id: latestLog.id,
-                    status: latestLog.status,
-                    durationSeconds: latestLog.duration_seconds,
-                    transcript: latestLog.transcript,
-                    summary: latestLog.summary,
-                    recordingUrl: latestLog.recording_url
-                } : null
+                callLog: callLogData,
+                qa
             };
         });
 

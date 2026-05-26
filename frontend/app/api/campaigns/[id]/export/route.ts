@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@/db';
 import { eq, desc, sql } from 'drizzle-orm';
+import { computeQAInsights } from '@/lib/qa_helper';
 
 const { campaigns, campaignNumbers } = schema;
 
@@ -95,6 +96,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
                 nextRetryAt: isCompleted ? null : lead.nextRetryAt,
                 callLogId: latestLog?.id || '',
                 summary: latestLog?.summary || '',
+                transcript: latestLog?.transcript || null,
                 duration: latestLog?.duration_seconds || lead.lastCallDurationSeconds || 0
             };
         });
@@ -119,6 +121,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
             "Called At",
             "Duration (Seconds)",
             "Transcript Summary",
+            "Likely Interested",
+            "Appointment Mentioned",
+            "Objection Detected",
+            "Callback Requested",
+            "Do Not Call Requested",
+            "Lead Quality Score",
+            "Recommended Next Action",
             ...dynamicKeys.map(k => `LeadData_${k}`)
         ];
 
@@ -141,6 +150,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
         // 7. Populate CSV Rows
         mappedLeads.forEach(lead => {
+            const qa = computeQAInsights(lead, { summary: lead.summary, durationSeconds: lead.duration, transcript: lead.transcript });
             const row = [
                 escapeCSV(lead.campaignId),
                 escapeCSV(lead.id),
@@ -157,6 +167,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
                 escapeCSV(lead.calledAt ? new Date(lead.calledAt).toISOString() : ''),
                 escapeCSV(lead.duration),
                 escapeCSV(lead.summary),
+                escapeCSV(qa.likely_interested ? "YES" : "NO"),
+                escapeCSV(qa.appointment_mentioned ? "YES" : "NO"),
+                escapeCSV(qa.objection_detected ? "YES" : "NO"),
+                escapeCSV(qa.callback_requested ? "YES" : "NO"),
+                escapeCSV(qa.do_not_call_requested ? "YES" : "NO"),
+                escapeCSV(qa.lead_quality_score),
+                escapeCSV(qa.recommended_next_action),
                 ...dynamicKeys.map(k => {
                     const ld = lead.leadData as Record<string, any>;
                     return escapeCSV(ld ? ld[k] : '');
