@@ -39,6 +39,14 @@ module.exports = {
       instances: 1,
       exec_mode: "fork",
       cwd: "/opt/global-access/livekit-dashboard/ai-worker"
+    },
+    {
+      name: "sarah-campaign-refill",
+      script: "campaign_refill.py",
+      interpreter: "/opt/global-access/livekit-dashboard/venv_prod/bin/python",
+      instances: 1,
+      exec_mode: "fork",
+      cwd: "/opt/global-access/livekit-dashboard/ai-worker"
     }
   ]
 }

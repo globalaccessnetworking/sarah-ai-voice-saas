@@ -63,7 +63,7 @@ export async function POST(
 
         // 4. Fetch a small batch of pending numbers based on max_concurrency
         const concurrency = campaign.concurrency || 1;
-        const batchSize = Math.min(concurrency, 5); // Safe batch enqueue size for now
+        const batchSize = concurrency; // Refill worker maintains concurrency; start exactly N
 
         const numbersToCall = await db.select()
             .from(campaignNumbers)
