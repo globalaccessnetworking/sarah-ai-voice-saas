@@ -366,8 +366,8 @@ export default function CreateCampaignPage() {
                                         <input type="number" min="1" max="100" value={formData.concurrency} onChange={(e) => setFormData({ ...formData, concurrency: parseInt(e.target.value) || 1 })} className="input-field w-full" />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium text-white">Retry Attempts</label>
-                                        <p className="text-xs text-zinc-400 mb-2">If busy, no answer, or failed</p>
+                                        <label className="text-sm font-medium text-white">Max Attempts Per Lead</label>
+                                        <p className="text-xs text-zinc-400 mb-2">Includes the first call. Example: set 3 for one initial call plus two retries.</p>
                                         <input type="number" min="0" value={formData.retryAttempts} onChange={(e) => setFormData({ ...formData, retryAttempts: parseInt(e.target.value) || 0 })} className="input-field w-full" />
                                     </div>
                                     <div className="space-y-2">
