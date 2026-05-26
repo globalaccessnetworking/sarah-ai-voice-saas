@@ -6024,9 +6024,14 @@ The opening message has already been delivered to the user automatically by the 
                                 user_speech_started_ts = getattr(session, "_ts_current_user_speech_started", None)
                                 agent_first_audio_ts = ts_now
 
+                                # Check and prevent negative stt_wait_ms
+                                stt_wait_invalid = False
                                 stt_wait_ms = None
                                 if stt_final_ts is not None and user_speech_ended_ts is not None:
-                                    stt_wait_ms = int((stt_final_ts - user_speech_ended_ts) * 1000)
+                                    if stt_final_ts >= user_speech_ended_ts:
+                                        stt_wait_ms = int((stt_final_ts - user_speech_ended_ts) * 1000)
+                                    else:
+                                        stt_wait_invalid = True
 
                                 llm_tts_to_first_audio_ms = None
                                 if stt_final_ts is not None:
@@ -6039,11 +6044,114 @@ The opening message has already been delivered to the user automatically by the 
                                 first_user_turn = (turn_idx == 1)
                                 total_first_turn_ms = total_user_done_to_agent_audio_ms if first_user_turn else None
 
+                                # Try to extract metrics from LiveKit objects
+                                lk_metrics = getattr(session, "_last_chat_message_metrics", None)
+                                
+                                # Fallback: search in chat context messages
+                                if lk_metrics is None and agent and hasattr(agent, "chat_ctx") and agent.chat_ctx:
+                                    try:
+                                        msgs = agent.chat_ctx.messages
+                                        if callable(msgs):
+                                            msgs = msgs()
+                                        for msg in reversed(msgs):
+                                            if getattr(msg, "role", "") in ("assistant", "agent") and hasattr(msg, "metrics") and msg.metrics:
+                                                lk_metrics = msg.metrics
+                                                break
+                                    except Exception:
+                                        pass
+
+                                # Retrieve the desired metrics from lk_metrics safely
+                                metrics_source = "manual"
+                                llm_start_ts = None
+                                llm_first_token_ms = None
+                                tts_start_ts = None
+                                tts_first_audio_ms = None
+                                eou_delay_ms = None
+                                model_latency_ms = None
+                                tts_latency_ms = None
+                                llm_first_token_ts = None
+                                tts_first_audio_ts = None
+
+                                if lk_metrics is not None:
+                                    metrics_source = "chat_message_metrics"
+                                    try:
+                                        # LLM first token
+                                        if hasattr(lk_metrics, "llm_ttfb"):
+                                            llm_first_token_ms = int(getattr(lk_metrics, "llm_ttfb") * 1000)
+                                        elif hasattr(lk_metrics, "llm_ttfb_ms"):
+                                            llm_first_token_ms = int(getattr(lk_metrics, "llm_ttfb_ms"))
+                                        elif hasattr(lk_metrics, "llm") and hasattr(lk_metrics.llm, "ttfb"):
+                                            llm_first_token_ms = int(lk_metrics.llm.ttfb * 1000)
+
+                                        # TTS first audio
+                                        if hasattr(lk_metrics, "tts_ttfb"):
+                                            tts_first_audio_ms = int(getattr(lk_metrics, "tts_ttfb") * 1000)
+                                        elif hasattr(lk_metrics, "tts_ttfb_ms"):
+                                            tts_first_audio_ms = int(getattr(lk_metrics, "tts_ttfb_ms"))
+                                        elif hasattr(lk_metrics, "tts") and hasattr(lk_metrics.tts, "ttfb"):
+                                            tts_first_audio_ms = int(lk_metrics.tts.ttfb * 1000)
+
+                                        # Model latency
+                                        if hasattr(lk_metrics, "llm_duration"):
+                                            model_latency_ms = int(getattr(lk_metrics, "llm_duration") * 1000)
+                                        elif hasattr(lk_metrics, "llm") and hasattr(lk_metrics.llm, "duration"):
+                                            model_latency_ms = int(lk_metrics.llm.duration * 1000)
+                                        elif hasattr(lk_metrics, "llm_latency_ms"):
+                                            model_latency_ms = int(getattr(lk_metrics, "llm_latency_ms"))
+
+                                        # TTS latency
+                                        if hasattr(lk_metrics, "tts_duration"):
+                                            tts_latency_ms = int(getattr(lk_metrics, "tts_duration") * 1000)
+                                        elif hasattr(lk_metrics, "tts") and hasattr(lk_metrics.tts, "duration"):
+                                            tts_latency_ms = int(lk_metrics.tts.duration * 1000)
+                                        elif hasattr(lk_metrics, "tts_latency_ms"):
+                                            tts_latency_ms = int(getattr(lk_metrics, "tts_latency_ms"))
+
+                                        # eou_delay_ms / end of utterance
+                                        if hasattr(lk_metrics, "eou_delay"):
+                                            eou_delay_ms = int(getattr(lk_metrics, "eou_delay") * 1000)
+                                        elif hasattr(lk_metrics, "eou_delay_ms"):
+                                            eou_delay_ms = int(getattr(lk_metrics, "eou_delay_ms"))
+                                            
+                                        # Start timestamps
+                                        if hasattr(lk_metrics, "llm_start_time"):
+                                            llm_start_ts = getattr(lk_metrics, "llm_start_time")
+                                        elif hasattr(lk_metrics, "llm") and hasattr(lk_metrics.llm, "start_time"):
+                                            llm_start_ts = lk_metrics.llm.start_time
+                                            
+                                        if hasattr(lk_metrics, "tts_start_time"):
+                                            tts_start_ts = getattr(lk_metrics, "tts_start_time")
+                                        elif hasattr(lk_metrics, "tts") and hasattr(lk_metrics.tts, "start_time"):
+                                            tts_start_ts = lk_metrics.tts.start_time
+                                            
+                                        # First token/audio timestamps
+                                        if hasattr(lk_metrics, "llm_first_token_time"):
+                                            llm_first_token_ts = getattr(lk_metrics, "llm_first_token_time")
+                                        elif hasattr(lk_metrics, "llm") and hasattr(lk_metrics.llm, "first_token_time"):
+                                            llm_first_token_ts = lk_metrics.llm.first_token_time
+                                            
+                                        if llm_first_token_ts is None and llm_start_ts is not None and llm_first_token_ms is not None:
+                                            llm_first_token_ts = llm_start_ts + (llm_first_token_ms / 1000.0)
+                                            
+                                        if hasattr(lk_metrics, "tts_first_audio_time"):
+                                            tts_first_audio_ts = getattr(lk_metrics, "tts_first_audio_time")
+                                        elif hasattr(lk_metrics, "tts") and hasattr(lk_metrics.tts, "first_audio_time"):
+                                            tts_first_audio_ts = lk_metrics.tts.first_audio_time
+                                            
+                                        if tts_first_audio_ts is None and tts_start_ts is not None and tts_first_audio_ms is not None:
+                                            tts_first_audio_ts = tts_start_ts + (tts_first_audio_ms / 1000.0)
+                                    except Exception:
+                                        pass
+
+                                if lk_metrics is None and getattr(session, "_last_session_usage", None) is not None:
+                                    metrics_source = "session_usage_updated"
+
                                 # Append to session list for CALL_LATENCY_SUMMARY
+                                # If invalid, stt_wait_ms is excluded from summary averages
                                 if hasattr(session, "_turns_data"):
                                     session._turns_data.append({
                                         "total_gap_ms": total_user_done_to_agent_audio_ms,
-                                        "stt_wait_ms": stt_wait_ms,
+                                        "stt_wait_ms": stt_wait_ms if not stt_wait_invalid else None,
                                         "llm_tts_to_first_audio_ms": llm_tts_to_first_audio_ms,
                                         "first_user_turn": first_user_turn
                                     })
@@ -6061,9 +6169,12 @@ The opening message has already been delivered to the user automatically by the 
                                 # One-time diagnostics per call (once per session)
                                 if not getattr(session, "_diagnostic_logged", False):
                                     setattr(session, "_diagnostic_logged", True)
-                                    logger.info("[TURN_LATENCY_DETAIL] llm_first_token_unavailable=true")
-                                    logger.info("[TURN_LATENCY_DETAIL] llm_first_token_hook_available=false")
-                                    logger.info("[TURN_LATENCY_DETAIL] tts_first_audio_hook_available=false")
+                                    llm_avail = "true" if llm_first_token_ms is not None else "false"
+                                    tts_avail = "true" if tts_first_audio_ms is not None else "false"
+                                    logger.info(f"[TURN_LATENCY_DETAIL] llm_first_token_hook_available={llm_avail}")
+                                    logger.info(f"[TURN_LATENCY_DETAIL] tts_first_audio_hook_available={tts_avail}")
+                                    if llm_first_token_ms is None:
+                                        logger.info("[TURN_LATENCY_DETAIL] llm_first_token_unavailable=true")
 
                                 # Incorporate useful metadata/identifiers if available
                                 campaign_id = "none"
@@ -6100,21 +6211,26 @@ The opening message has already been delivered to the user automatically by the 
                                     f"user_speech_started_ts={fmt_val(user_speech_started_ts)} "
                                     f"user_speech_ended_ts={fmt_val(user_speech_ended_ts)} "
                                     f"stt_final_ts={fmt_val(stt_final_ts)} "
-                                    f"llm_start_ts=none "
-                                    f"llm_first_token_ts=none "
-                                    f"tts_start_ts=none "
-                                    f"tts_first_audio_ts=none "
+                                    f"llm_start_ts={fmt_val(llm_start_ts)} "
+                                    f"llm_first_token_ts={fmt_val(llm_first_token_ts)} "
+                                    f"tts_start_ts={fmt_val(tts_start_ts)} "
+                                    f"tts_first_audio_ts={fmt_val(tts_first_audio_ts)} "
                                     f"agent_first_audio_ts={fmt_val(agent_first_audio_ts)} "
                                     f"stt_wait_ms={fmt_val(stt_wait_ms)} "
-                                    f"llm_first_token_ms=none "
-                                    f"tts_first_audio_ms=none "
+                                    f"llm_first_token_ms={fmt_val(llm_first_token_ms)} "
+                                    f"tts_first_audio_ms={fmt_val(tts_first_audio_ms)} "
                                     f"llm_tts_to_first_audio_ms={fmt_val(llm_tts_to_first_audio_ms)} "
                                     f"total_first_turn_ms={fmt_val(total_first_turn_ms)} "
                                     f"total_user_done_to_agent_audio_ms={fmt_val(total_user_done_to_agent_audio_ms)} "
                                     f"campaign_id={fmt_val(campaign_id)} "
                                     f"lead_id={fmt_val(lead_id)} "
                                     f"room_name={fmt_val(room_name)} "
-                                    f"call_id={fmt_val(call_id)}"
+                                    f"call_id={fmt_val(call_id)} "
+                                    f"stt_wait_invalid={fmt_val(stt_wait_invalid, is_bool=True)} "
+                                    f"metrics_source={fmt_val(metrics_source)} "
+                                    f"eou_delay_ms={fmt_val(eou_delay_ms)} "
+                                    f"model_latency_ms={fmt_val(model_latency_ms)} "
+                                    f"tts_latency_ms={fmt_val(tts_latency_ms)}"
                                 )
                         except Exception as detail_err:
                             logger.debug(f"Error logging TURN_LATENCY_DETAIL: {detail_err}")
@@ -6275,11 +6391,30 @@ The opening message has already been delivered to the user automatically by the 
             except Exception as e:
                 logger.debug(f"Error handling metrics: {e}")
 
+        @session.on("session_usage_updated")
+        def on_session_usage(event):
+            """Handle session usage updates (cumulative telemetry)."""
+            try:
+                usage = getattr(event, "usage", None)
+                if usage:
+                    logger.debug(f"[METRICS] session_usage_updated received: {usage}")
+                    setattr(session, "_last_session_usage", usage)
+            except Exception as e:
+                logger.debug(f"Error handling session_usage_updated: {e}")
+
 
 
         @session.on("conversation_item_added")
         def on_conversation_item(event):
             """Handle conversation items (final user and agent messages only)."""
+            try:
+                # Capture ChatMessage.metrics if available
+                item = getattr(event, 'item', None) or event
+                if item and hasattr(item, "metrics") and item.metrics:
+                    setattr(session, "_last_chat_message_metrics", item.metrics)
+            except Exception as metrics_err:
+                logger.debug(f"Error capturing ChatMessage metrics: {metrics_err}")
+
             try:
                 # --- SOVEREIGN CONTEXT TRUNCATION (Zero TTFT Fix) ---
                 # This keeps only the last 3-4 turns (1 system + 11 messages) to maintain 
