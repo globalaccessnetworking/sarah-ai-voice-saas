@@ -133,7 +133,7 @@ class CampaignRefillWorker:
                     cursor.execute("""
                         UPDATE campaign_numbers 
                         SET status = 'processing'
-                        WHERE id = ANY(%s)
+                        WHERE id = ANY(%s::uuid[])
                     """, (pending_ids,))
                     
                     self.db_conn.commit()
@@ -153,7 +153,7 @@ class CampaignRefillWorker:
                     cursor.execute("""
                         UPDATE campaign_numbers 
                         SET status = 'pending'
-                        WHERE id = ANY(%s)
+                        WHERE id = ANY(%s::uuid[])
                     """, (pending_ids,))
                     continue
                     
@@ -171,7 +171,7 @@ class CampaignRefillWorker:
                     cursor.execute("""
                         UPDATE campaign_numbers 
                         SET status = 'pending'
-                        WHERE id = ANY(%s)
+                        WHERE id = ANY(%s::uuid[])
                     """, (pending_ids,))
                     continue
 
@@ -193,7 +193,7 @@ class CampaignRefillWorker:
                             cursor.execute("""
                                 UPDATE campaign_numbers 
                                 SET status = 'pending'
-                                WHERE id = ANY(%s)
+                                WHERE id = ANY(%s::uuid[])
                             """, (revert_ids,))
                             break
 
@@ -253,7 +253,7 @@ class CampaignRefillWorker:
                         cursor.execute("""
                             UPDATE campaign_numbers 
                             SET status = 'pending'
-                            WHERE id = %s
+                            WHERE id = %s::uuid
                         """, (number['id'],))
 
                 if enqueued_successfully:

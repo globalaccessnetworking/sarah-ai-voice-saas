@@ -5434,23 +5434,32 @@ The opening message has already been delivered to the user automatically by the 
                         "in-progress", "in_progress", "connected"
                     }
                     
+                    saw_sip_participant = False
+                    last_join_log_time = 0.0
+                    
                     while time.time() - ts_wait_start < max_wait:
                         if getattr(session, "_call_ending", False) or getattr(session, "sip_participant_disconnected", False):
                             logger.info("[SIP_ANSWER_WAIT] Break wait: session call ending or participant disconnected")
                             break
                             
-                        if not ctx.room.remote_participants:
-                            logger.info("[SIP_ANSWER_WAIT] Break wait: no remote participants in room")
-                            break
+                        remote_parts = list(ctx.room.remote_participants.values())
+                        if not remote_parts:
+                            if saw_sip_participant:
+                                logger.info("[SIP_ANSWER_WAIT] SIP participant disappeared before answer")
+                                break
+                            else:
+                                now = time.time()
+                                if now - last_join_log_time >= 1.0:
+                                    logger.info("[SIP_ANSWER_WAIT] waiting for SIP participant to join")
+                                    last_join_log_time = now
+                                await asyncio.sleep(0.1)
+                                continue
+                                
+                        if not saw_sip_participant:
+                            logger.info("[SIP_ANSWER_WAIT] sip participant observed")
+                            saw_sip_participant = True
                             
-                        participant = None
-                        for p in ctx.room.remote_participants.values():
-                            participant = p
-                            break
-                            
-                        if not participant:
-                            break
-                            
+                        participant = remote_parts[0]
                         attrs = getattr(participant, 'attributes', {}) or {}
                         
                         now = time.time()
