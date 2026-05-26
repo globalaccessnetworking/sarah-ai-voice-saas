@@ -123,6 +123,9 @@ class CampaignRefillWorker:
                                 SET status = 'completed', updated_at = NOW() 
                                 WHERE id = %s AND status = 'running'
                             """, (campaign_id,))
+                            self.db_conn.commit()
+                        else:
+                            self.db_conn.rollback()
                         continue
 
                     # Atomic state transition from pending -> processing
