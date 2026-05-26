@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ArrowLeft, Search, Megaphone, CheckCircle2, XCircle, Clock, FileText, Phone, User, Building, Info, AlertCircle } from "lucide-react";
+import { ArrowLeft, Search, Megaphone, CheckCircle2, XCircle, Clock, FileText, Phone, User, Building, Info, AlertCircle, Download, Activity, Play, Check } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 
@@ -11,6 +11,7 @@ interface CallLog {
     durationSeconds: number;
     transcript: any;
     summary: string;
+    recordingUrl: string | null;
 }
 
 interface Lead {
@@ -19,6 +20,7 @@ interface Lead {
     name: string | null;
     companyName: string | null;
     status: string;
+    leadData: any;
     calledAt: string | null;
     attemptCount?: number;
     lastAttemptAt?: string | null;
@@ -37,6 +39,17 @@ interface CampaignStats {
     failed: number;
     progress: number;
     retry_scheduled: number;
+    no_answer: number;
+    busy: number;
+    rejected: number;
+    no_conversation: number;
+    disconnected_before_greeting: number;
+    invalid_number: number;
+    other_failures: number;
+    average_attempts: number;
+    average_duration: number;
+    connect_rate: number;
+    completion_rate: number;
 }
 
 interface CampaignDetails {
@@ -56,8 +69,12 @@ export default function CampaignDetailsPage() {
     const [data, setData] = useState<CampaignDetails | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    
+    // Core search & filtering state
     const [searchTerm, setSearchTerm] = useState("");
     const [statusFilter, setStatusFilter] = useState("all");
+    const [dispositionSearch, setDispositionSearch] = useState("");
+    const [attemptsFilter, setAttemptsFilter] = useState("all");
     
     // Drawer state
     const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
@@ -109,6 +126,7 @@ export default function CampaignDetailsPage() {
 
     const { campaign, stats, leads } = data;
 
+    // Upgraded multi-criteria lead filters
     const filteredLeads = leads.filter(lead => {
         const matchesSearch = 
             lead.phone.includes(searchTerm) || 
@@ -117,7 +135,18 @@ export default function CampaignDetailsPage() {
             
         const matchesStatus = statusFilter === "all" || lead.status === statusFilter;
         
-        return matchesSearch && matchesStatus;
+        const matchesDisposition = 
+            !dispositionSearch || 
+            (lead.disposition && lead.disposition.toLowerCase().includes(dispositionSearch.toLowerCase()));
+
+        const matchesAttempts = 
+            attemptsFilter === "all" ? true :
+            attemptsFilter === "0" ? (lead.attemptCount || 0) === 0 :
+            attemptsFilter === "1" ? (lead.attemptCount || 0) === 1 :
+            attemptsFilter === "2" ? (lead.attemptCount || 0) === 2 :
+            attemptsFilter === "3+" ? (lead.attemptCount || 0) >= 3 : true;
+        
+        return matchesSearch && matchesStatus && matchesDisposition && matchesAttempts;
     });
 
     const formatDuration = (seconds: number | null | undefined) => {
@@ -127,11 +156,44 @@ export default function CampaignDetailsPage() {
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
+    // Safe QA Scanners (Read-Only Heuristic Labels)
+    const scanAnswered = (lead: Lead) => {
+        const duration = lead.callLog?.durationSeconds || lead.lastCallDurationSeconds || 0;
+        return duration > 0;
+    };
+
+    const scanInterested = (lead: Lead) => {
+        const summaryText = lead.callLog?.summary?.toLowerCase() || "";
+        const dispText = lead.disposition?.toLowerCase() || "";
+        
+        // Scan transcript if available
+        let transcriptText = "";
+        if (lead.callLog?.transcript && Array.isArray(lead.callLog.transcript)) {
+            transcriptText = lead.callLog.transcript.map((m: any) => m.content || "").join(" ").toLowerCase();
+        }
+
+        const keywords = ["interested", "yes", "sure", "sign me up", "want to", "callback", "call back"];
+        return keywords.some(k => dispText.includes(k) || summaryText.includes(k) || transcriptText.includes(k));
+    };
+
+    const scanAppointment = (lead: Lead) => {
+        const summaryText = lead.callLog?.summary?.toLowerCase() || "";
+        const dispText = lead.disposition?.toLowerCase() || "";
+
+        let transcriptText = "";
+        if (lead.callLog?.transcript && Array.isArray(lead.callLog.transcript)) {
+            transcriptText = lead.callLog.transcript.map((m: any) => m.content || "").join(" ").toLowerCase();
+        }
+
+        const keywords = ["appt", "appointment", "schedule", "book", "meeting", "meet", "time"];
+        return keywords.some(k => dispText.includes(k) || summaryText.includes(k) || transcriptText.includes(k));
+    };
+
     return (
         <div className="w-full h-full overflow-y-auto bg-zinc-950 p-8 md:p-10 relative">
-            <div className="max-w-[1600px] mx-auto flex flex-col gap-8">
+            <div className="max-w-[1600px] mx-auto flex flex-col gap-6">
 
-                {/* Header */}
+                {/* Header Section */}
                 <div className="flex flex-col gap-4">
                     <Link href="/telephony/campaigns" className="text-zinc-400 hover:text-white flex items-center gap-2 text-sm w-fit transition-colors">
                         <ArrowLeft size={16} />
@@ -154,87 +216,170 @@ export default function CampaignDetailsPage() {
                                 <span className="text-sm text-zinc-500">Concurrency: {campaign.concurrency}</span>
                             </div>
                         </div>
+                        
+                        {/* CSV Export Action Button */}
+                        <button
+                            onClick={() => window.open(`/api/campaigns/${id}/export`, '_blank')}
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-medium text-sm px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors self-start md:self-auto shadow-lg"
+                        >
+                            <Download size={16} />
+                            Export CSV Results
+                        </button>
                     </div>
                 </div>
 
-                {/* KPI Cards */}
+                {/* KPI Metrics Summary Grid */}
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-2">
-                        <div className="text-sm font-medium tracking-wide text-zinc-400 uppercase">Total Leads</div>
+                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-1.5 shadow-sm">
+                        <div className="text-xs font-semibold tracking-wide text-zinc-500 uppercase">Total Leads</div>
                         <div className="text-2xl font-bold text-white">{stats.total}</div>
                     </div>
-                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-2">
-                        <div className="text-sm font-medium tracking-wide text-zinc-400 uppercase flex items-center justify-between">
-                            Pending <Clock size={14} />
+                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-1.5 shadow-sm">
+                        <div className="text-xs font-semibold tracking-wide text-zinc-500 uppercase flex items-center justify-between">
+                            Pending <Clock size={14} className="text-zinc-500" />
                         </div>
                         <div className="text-2xl font-bold text-white">{stats.pending}</div>
                     </div>
-                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-2">
-                        <div className="text-sm font-medium tracking-wide text-zinc-400 uppercase flex items-center justify-between">
-                            Processing <Megaphone size={14} className="text-amber-500" />
+                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-1.5 shadow-sm">
+                        <div className="text-xs font-semibold tracking-wide text-zinc-500 uppercase flex items-center justify-between">
+                            Processing <Activity size={14} className="text-amber-500 animate-pulse" />
                         </div>
                         <div className="text-2xl font-bold text-white">{stats.processing}</div>
                     </div>
-                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-2">
-                        <div className="text-sm font-medium tracking-wide text-zinc-400 uppercase flex items-center justify-between">
+                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-1.5 shadow-sm">
+                        <div className="text-xs font-semibold tracking-wide text-zinc-500 uppercase flex items-center justify-between">
                             Completed <CheckCircle2 size={14} className="text-emerald-500" />
                         </div>
                         <div className="text-2xl font-bold text-white">{stats.completed}</div>
                     </div>
-                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-2">
-                        <div className="text-sm font-medium tracking-wide text-zinc-400 uppercase flex items-center justify-between">
+                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-1.5 shadow-sm">
+                        <div className="text-xs font-semibold tracking-wide text-zinc-500 uppercase flex items-center justify-between">
                             Failed <XCircle size={14} className="text-red-500" />
                         </div>
                         <div className="text-2xl font-bold text-white">{stats.failed}</div>
                     </div>
-                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-2">
-                        <div className="text-sm font-medium tracking-wide text-zinc-400 uppercase">Progress</div>
-                        <div className="text-2xl font-bold text-white">{stats.progress}%</div>
+                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-1.5 shadow-sm">
+                        <div className="text-xs font-semibold tracking-wide text-zinc-500 uppercase">Connect Rate</div>
+                        <div className="text-2xl font-bold text-white">{stats.connect_rate}%</div>
                     </div>
                 </div>
 
-                {/* Progress Bar Segmented */}
+                {/* Progress Segmented Bar */}
                 {stats.total > 0 && (
-                    <div className="w-full bg-zinc-900/50 border border-zinc-800 p-4 rounded-xl flex flex-col gap-2">
-                        <div className="flex justify-between text-xs font-medium text-zinc-400 mb-1">
+                    <div className="w-full bg-zinc-900/50 border border-zinc-800 p-4 rounded-xl flex flex-col gap-2 shadow-sm">
+                        <div className="flex justify-between text-xs font-medium text-zinc-400 mb-0.5">
                             <span>
-                                Campaign Progress ({stats.completed + stats.failed} / {stats.total})
+                                Dialed Progress ({stats.completed + stats.failed} / {stats.total} leads)
                                 {stats.retry_scheduled > 0 && (
-                                    <span className="text-cyan-400 ml-1.5" title={`${stats.retry_scheduled} scheduled for retry`}>
-                                        ({stats.retry_scheduled} retry)
+                                    <span className="text-blue-400 ml-1.5" title={`${stats.retry_scheduled} leads currently scheduled for retry`}>
+                                        ({stats.retry_scheduled} retry scheduled)
                                     </span>
                                 )}
                             </span>
-                            <span>{stats.progress}%</span>
+                            <span className="font-semibold text-zinc-200">{stats.completion_rate}% Completion</span>
                         </div>
-                        <div className="h-4 w-full bg-zinc-800 rounded-full flex overflow-hidden">
+                        <div className="h-3 w-full bg-zinc-800/80 rounded-full flex overflow-hidden">
                             <div className="bg-emerald-500 h-full transition-all duration-500" style={{ width: `${(stats.completed / stats.total) * 100}%` }} title={`Completed: ${stats.completed}`} />
                             <div className="bg-red-500 h-full transition-all duration-500" style={{ width: `${(stats.failed / stats.total) * 100}%` }} title={`Failed: ${stats.failed}`} />
-                            <div className="bg-cyan-500 h-full transition-all duration-500" style={{ width: `${(stats.retry_scheduled / stats.total) * 100}%` }} title={`Retry Scheduled: ${stats.retry_scheduled}`} />
+                            <div className="bg-blue-500 h-full transition-all duration-500" style={{ width: `${(stats.retry_scheduled / stats.total) * 100}%` }} title={`Retry Scheduled: ${stats.retry_scheduled}`} />
                             <div className="bg-amber-500 h-full transition-all duration-500" style={{ width: `${(stats.processing / stats.total) * 100}%` }} title={`Processing: ${stats.processing}`} />
                             <div className="bg-zinc-700 h-full transition-all duration-500" style={{ width: `${(stats.pending / stats.total) * 100}%` }} title={`Pending: ${stats.pending}`} />
                         </div>
                     </div>
                 )}
 
-                {/* Filters */}
-                <div className="card p-4 flex flex-col md:flex-row gap-4 mt-2">
-                    <div className="relative flex-1">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                {/* Campaign Summary & Outcomes Performance Report Card */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Outcome Breakdown List */}
+                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-5 flex flex-col gap-4 shadow-sm">
+                        <h2 className="text-base font-bold text-white border-b border-zinc-800 pb-2.5 flex items-center gap-2">
+                            <Megaphone size={16} className="text-blue-400" />
+                            Campaign Outcome Breakdown
+                        </h2>
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-3.5 text-sm">
+                            <div className="flex justify-between py-1 border-b border-zinc-800/60">
+                                <span className="text-zinc-500">Completed Success</span>
+                                <span className="text-emerald-400 font-bold">{stats.completed}</span>
+                            </div>
+                            <div className="flex justify-between py-1 border-b border-zinc-800/60">
+                                <span className="text-zinc-500">No Answer</span>
+                                <span className="text-zinc-300 font-semibold">{stats.no_answer}</span>
+                            </div>
+                            <div className="flex justify-between py-1 border-b border-zinc-800/60">
+                                <span className="text-zinc-500">Line Busy</span>
+                                <span className="text-zinc-300 font-semibold">{stats.busy}</span>
+                            </div>
+                            <div className="flex justify-between py-1 border-b border-zinc-800/60">
+                                <span className="text-zinc-500">Rejected / DNC</span>
+                                <span className="text-zinc-300 font-semibold">{stats.rejected}</span>
+                            </div>
+                            <div className="flex justify-between py-1 border-b border-zinc-800/60">
+                                <span className="text-zinc-500">No Conversation</span>
+                                <span className="text-zinc-300 font-semibold">{stats.no_conversation}</span>
+                            </div>
+                            <div className="flex justify-between py-1 border-b border-zinc-800/60">
+                                <span className="text-zinc-500">Early Disconnect</span>
+                                <span className="text-zinc-300 font-semibold">{stats.disconnected_before_greeting}</span>
+                            </div>
+                            <div className="flex justify-between py-1 border-b border-zinc-800/60">
+                                <span className="text-zinc-500">Invalid Number</span>
+                                <span className="text-zinc-300 font-semibold">{stats.invalid_number}</span>
+                            </div>
+                            <div className="flex justify-between py-1 border-b border-zinc-800/60">
+                                <span className="text-zinc-500">Other Failures</span>
+                                <span className="text-zinc-300 font-semibold">{stats.other_failures}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Campaign Performance Metrics */}
+                    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-5 flex flex-col gap-4 shadow-sm">
+                        <h2 className="text-base font-bold text-white border-b border-zinc-800 pb-2.5 flex items-center gap-2">
+                            <FileText size={16} className="text-blue-400" />
+                            Business Intelligence Metrics
+                        </h2>
+                        <div className="grid grid-cols-2 gap-4 flex-1">
+                            <div className="bg-zinc-950/80 p-4 rounded-xl border border-zinc-850 flex flex-col justify-center">
+                                <span className="text-[10px] text-zinc-500 uppercase tracking-wider block font-semibold">Avg Attempts / Lead</span>
+                                <span className="text-2xl font-bold text-zinc-100 block mt-1">{stats.average_attempts}</span>
+                            </div>
+                            <div className="bg-zinc-950/80 p-4 rounded-xl border border-zinc-850 flex flex-col justify-center">
+                                <span className="text-[10px] text-zinc-500 uppercase tracking-wider block font-semibold">Avg Conversation Time</span>
+                                <span className="text-2xl font-bold text-zinc-100 block mt-1">{formatDuration(stats.average_duration)}</span>
+                            </div>
+                            <div className="bg-zinc-950/80 p-4 rounded-xl border border-zinc-850 flex flex-col justify-center">
+                                <span className="text-[10px] text-zinc-500 uppercase tracking-wider block font-semibold">Prospect Connect Rate</span>
+                                <span className="text-2xl font-bold text-emerald-400 block mt-1">{stats.connect_rate}%</span>
+                            </div>
+                            <div className="bg-zinc-950/80 p-4 rounded-xl border border-zinc-850 flex flex-col justify-center">
+                                <span className="text-[10px] text-zinc-500 uppercase tracking-wider block font-semibold">Campaign Completion</span>
+                                <span className="text-2xl font-bold text-blue-400 block mt-1">{stats.completion_rate}%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Filters Interface Grid */}
+                <div className="card p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-2 shadow-sm">
+                    {/* General Text Search */}
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
                         <input
                             type="text"
-                            placeholder="Search leads by name, phone, or company..."
+                            placeholder="Name, phone, or company..."
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
-                            className="input-field pl-10 w-full"
+                            className="input-field pl-9 w-full text-sm"
                         />
                     </div>
+                    
+                    {/* Status Dropdown */}
                     <select
                         value={statusFilter}
                         onChange={(e) => setStatusFilter(e.target.value)}
-                        className="input-field md:w-48"
+                        className="input-field w-full text-sm"
                     >
-                        <option value="all">All Statuses</option>
+                        <option value="all">All Campaign Statuses</option>
                         <option value="pending">Pending</option>
                         <option value="processing">Processing</option>
                         <option value="retry_scheduled">Retry Scheduled</option>
@@ -242,11 +387,38 @@ export default function CampaignDetailsPage() {
                         <option value="failed">Failed</option>
                         <option value="no_answer">No Answer</option>
                         <option value="busy">Busy</option>
+                        <option value="no_conversation">No Conversation</option>
+                        <option value="disconnected_before_greeting">Early Disconnect</option>
+                    </select>
+
+                    {/* Dynamic Disposition Search */}
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
+                        <input
+                            type="text"
+                            placeholder="Filter by disposition..."
+                            value={dispositionSearch}
+                            onChange={(e) => setDispositionSearch(e.target.value)}
+                            className="input-field pl-9 w-full text-sm"
+                        />
+                    </div>
+
+                    {/* Attempts Dropdown */}
+                    <select
+                        value={attemptsFilter}
+                        onChange={(e) => setAttemptsFilter(e.target.value)}
+                        className="input-field w-full text-sm"
+                    >
+                        <option value="all">All Attempt Counts</option>
+                        <option value="0">0 attempts (Not dialed)</option>
+                        <option value="1">1 attempt</option>
+                        <option value="2">2 attempts</option>
+                        <option value="3+">3+ attempts</option>
                     </select>
                 </div>
 
-                {/* Lead Table */}
-                <div className="card overflow-hidden">
+                {/* Lead Outcomes Listings Data Table */}
+                <div className="card overflow-hidden shadow-sm">
                     <div className="overflow-x-auto">
                         <table className="data-table w-full">
                             <thead>
@@ -255,7 +427,7 @@ export default function CampaignDetailsPage() {
                                     <th>Name</th>
                                     <th>Company</th>
                                     <th>Status</th>
-                                    <th>Attempts</th>
+                                    <th className="text-center">Attempts</th>
                                     <th>Disposition</th>
                                     <th>Next Retry</th>
                                     <th>Duration</th>
@@ -266,14 +438,14 @@ export default function CampaignDetailsPage() {
                             <tbody>
                                 {filteredLeads.length === 0 ? (
                                     <tr>
-                                        <td colSpan={10} className="text-center py-8 text-zinc-500">
-                                            No leads match the current filters.
+                                        <td colSpan={10} className="text-center py-10 text-zinc-500 italic">
+                                            No leads match the selected search & reporting filters.
                                         </td>
                                     </tr>
                                 ) : (
                                     filteredLeads.map((lead) => (
-                                        <tr key={lead.id} className="hover:bg-zinc-800/30">
-                                            <td className="font-medium text-zinc-300">{lead.phone}</td>
+                                        <tr key={lead.id} className="hover:bg-zinc-800/30 transition-colors">
+                                            <td className="font-mono text-zinc-300 font-medium">{lead.phone}</td>
                                             <td className="text-zinc-400">{lead.name || '-'}</td>
                                             <td className="text-zinc-400">{lead.companyName || '-'}</td>
                                             <td>
@@ -288,7 +460,7 @@ export default function CampaignDetailsPage() {
                                                 </span>
                                             </td>
                                             <td className="text-zinc-400 text-center">{lead.attemptCount || 0}</td>
-                                            <td className="text-zinc-400">{lead.disposition || '-'}</td>
+                                            <td className="text-zinc-300 font-medium">{lead.disposition || '-'}</td>
                                             <td className="text-zinc-400">
                                                 {lead.status === 'retry_scheduled' && lead.nextRetryAt ? new Date(lead.nextRetryAt).toLocaleString() : '-'}
                                             </td>
@@ -301,9 +473,9 @@ export default function CampaignDetailsPage() {
                                             <td className="text-right">
                                                 <button 
                                                     onClick={() => setSelectedLead(lead)}
-                                                    className="p-2 text-zinc-400 hover:text-blue-400 hover:bg-zinc-800 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    className="p-2 text-zinc-400 hover:text-blue-400 hover:bg-zinc-800 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                                                     disabled={!lead.callLog}
-                                                    title={lead.callLog ? "View Details" : "No call log available"}
+                                                    title={lead.callLog ? "Review Call Details" : "No call log database entry"}
                                                 >
                                                     <FileText size={16} />
                                                 </button>
@@ -317,118 +489,172 @@ export default function CampaignDetailsPage() {
                 </div>
             </div>
 
-            {/* Lead Details Drawer Overlay */}
+            {/* Interactive Lead Details slide-over drawer */}
             {selectedLead && (
-                <div className="fixed inset-0 z-50 bg-black/60 flex justify-end">
-                    {/* Drawer container */}
-                    <div className="w-full max-w-lg bg-zinc-950 border-l border-zinc-800 h-full flex flex-col animate-in slide-in-from-right shadow-2xl">
+                <div className="fixed inset-0 z-50 bg-black/70 flex justify-end transition-opacity">
+                    {/* Drawer panel container */}
+                    <div className="w-full max-w-lg bg-zinc-950 border-l border-zinc-800 h-full flex flex-col animate-in slide-in-from-right duration-200 shadow-2xl">
                         
                         {/* Drawer Header */}
-                        <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
-                            <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-                                <Info className="text-blue-500" size={20} />
-                                Lead Details
+                        <div className="p-5 border-b border-zinc-800 flex items-center justify-between">
+                            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                                <Info className="text-blue-500" size={18} />
+                                Call Outcome & Transcript
                             </h2>
                             <button 
                                 onClick={() => setSelectedLead(null)}
                                 className="p-2 text-zinc-400 hover:text-white rounded-md bg-zinc-900 hover:bg-zinc-800 transition-colors"
                             >
-                                <XCircle size={20} />
+                                <XCircle size={18} />
                             </button>
                         </div>
 
-                        {/* Drawer Body */}
-                        <div className="p-6 flex-1 overflow-y-auto flex flex-col gap-6">
+                        {/* Drawer scrollable content */}
+                        <div className="p-5 flex-1 overflow-y-auto flex flex-col gap-5">
                             
-                            {/* Lead Data section */}
-                            <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-5 flex flex-col gap-4">
-                                <h3 className="text-sm font-semibold text-zinc-300 uppercase tracking-wide border-b border-zinc-800 pb-2">Lead Information</h3>
-                                
-                                <div className="flex items-center gap-3 text-zinc-400">
-                                    <Phone size={16} className="text-zinc-500" />
-                                    <span className="font-mono text-zinc-200">{selectedLead.phone}</span>
-                                </div>
-                                {selectedLead.name && (
-                                    <div className="flex items-center gap-3 text-zinc-400">
-                                        <User size={16} className="text-zinc-500" />
-                                        <span className="text-zinc-200">{selectedLead.name}</span>
-                                    </div>
-                                )}
-                                {selectedLead.companyName && (
-                                    <div className="flex items-center gap-3 text-zinc-400">
-                                        <Building size={16} className="text-zinc-500" />
-                                        <span className="text-zinc-200">{selectedLead.companyName}</span>
-                                    </div>
-                                )}
-                                <div className="flex items-center gap-3 mt-1">
-                                    <span className={`badge ${
-                                        selectedLead.status === 'completed' ? 'badge-success' :
-                                        selectedLead.status === 'pending' ? 'badge-neutral' :
-                                        selectedLead.status === 'processing' ? 'badge-warning' :
-                                        selectedLead.status === 'retry_scheduled' ? 'badge-info' :
-                                        'badge-danger'
-                                    }`}>
-                                        {selectedLead.status.replace(/_/g, ' ').toUpperCase()}
-                                    </span>
-                                    {(selectedLead.attemptCount ?? 0) > 0 && (
-                                        <span className="text-sm text-zinc-500">
-                                            Attempt {selectedLead.attemptCount}
+                            {/* Heuristic QA Insights (Read-Only) */}
+                            <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3.5 shadow-sm">
+                                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800/80 pb-2">Heuristic QA Insights</h3>
+                                <div className="grid grid-cols-3 gap-2.5 text-center">
+                                    <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-850/80">
+                                        <span className="text-[9px] text-zinc-500 uppercase tracking-widest block font-medium">Likely Answered</span>
+                                        <span className={`text-xs font-bold block mt-1.5 ${scanAnswered(selectedLead) ? "text-emerald-400" : "text-zinc-500"}`}>
+                                            {scanAnswered(selectedLead) ? "YES" : "NO"}
                                         </span>
-                                    )}
+                                    </div>
+                                    <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-850/80">
+                                        <span className="text-[9px] text-zinc-500 uppercase tracking-widest block font-medium">Likely Interested</span>
+                                        <span className={`text-xs font-bold block mt-1.5 ${scanInterested(selectedLead) ? "text-emerald-400" : "text-zinc-500"}`}>
+                                            {scanInterested(selectedLead) ? "YES" : "NO"}
+                                        </span>
+                                    </div>
+                                    <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-850/80">
+                                        <span className="text-[9px] text-zinc-500 uppercase tracking-widest block font-medium">Appt Mentioned</span>
+                                        <span className={`text-xs font-bold block mt-1.5 ${scanAppointment(selectedLead) ? "text-blue-400" : "text-zinc-500"}`}>
+                                            {scanAppointment(selectedLead) ? "YES" : "NO"}
+                                        </span>
+                                    </div>
                                 </div>
-                                {selectedLead.failureReason && (
-                                    <div className="mt-2 text-sm">
-                                        <span className="text-zinc-500">Failure Reason: </span>
-                                        <span className="text-red-400">{selectedLead.failureReason}</span>
-                                    </div>
-                                )}
-                                {selectedLead.disposition && (
-                                    <div className="mt-1 text-sm">
-                                        <span className="text-zinc-500">Disposition: </span>
-                                        <span className="text-zinc-300">{selectedLead.disposition}</span>
-                                    </div>
-                                )}
-                                {selectedLead.status === 'retry_scheduled' && selectedLead.nextRetryAt && (
-                                    <div className="mt-1 text-sm">
-                                        <span className="text-zinc-500">Next Retry At: </span>
-                                        <span className="text-blue-400">{new Date(selectedLead.nextRetryAt).toLocaleString()}</span>
-                                    </div>
-                                )}
-                                {selectedLead.lastAttemptAt && (
-                                    <div className="mt-1 text-sm">
-                                        <span className="text-zinc-500">Last Attempt At: </span>
-                                        <span className="text-zinc-300">{new Date(selectedLead.lastAttemptAt).toLocaleString()}</span>
-                                    </div>
-                                )}
-                                {(selectedLead.callLog?.durationSeconds || selectedLead.lastCallDurationSeconds) ? (
-                                    <div className="mt-1 text-sm">
-                                        <span className="text-zinc-500">Call Duration: </span>
-                                        <span className="text-zinc-300">{formatDuration(selectedLead.callLog?.durationSeconds || selectedLead.lastCallDurationSeconds)}</span>
-                                    </div>
-                                ) : null}
                             </div>
 
-                            {/* Call Summary */}
+                            {/* Call Recording Player */}
+                            <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 shadow-sm">
+                                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800/80 pb-2">Call Recording</h3>
+                                {selectedLead.callLog?.recordingUrl ? (
+                                    <div className="flex flex-col gap-2 mt-1">
+                                        <audio src={selectedLead.callLog.recordingUrl} controls className="w-full h-9" />
+                                        <a 
+                                            href={selectedLead.callLog.recordingUrl} 
+                                            target="_blank" 
+                                            rel="noreferrer" 
+                                            className="text-xs text-blue-400 hover:text-blue-300 underline self-end font-medium"
+                                        >
+                                            Open in new tab
+                                        </a>
+                                    </div>
+                                ) : (
+                                    <span className="text-sm text-zinc-500 italic mt-1">No recording available.</span>
+                                )}
+                            </div>
+
+                            {/* Lead Information */}
+                            <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 shadow-sm">
+                                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800/80 pb-2">Lead Information</h3>
+                                
+                                <div className="grid grid-cols-2 gap-3 text-sm">
+                                    <div className="flex flex-col gap-0.5">
+                                        <span className="text-[10px] text-zinc-500 uppercase font-semibold">Phone</span>
+                                        <span className="font-mono text-zinc-200">{selectedLead.phone}</span>
+                                    </div>
+                                    <div className="flex flex-col gap-0.5">
+                                        <span className="text-[10px] text-zinc-500 uppercase font-semibold">Status</span>
+                                        <span className="text-zinc-200 capitalize">{selectedLead.status.replace(/_/g, ' ')}</span>
+                                    </div>
+                                    {selectedLead.name && (
+                                        <div className="flex flex-col gap-0.5">
+                                            <span className="text-[10px] text-zinc-500 uppercase font-semibold">Name</span>
+                                            <span className="text-zinc-200">{selectedLead.name}</span>
+                                        </div>
+                                    )}
+                                    {selectedLead.companyName && (
+                                        <div className="flex flex-col gap-0.5">
+                                            <span className="text-[10px] text-zinc-500 uppercase font-semibold">Company</span>
+                                            <span className="text-zinc-200">{selectedLead.companyName}</span>
+                                        </div>
+                                    )}
+                                    {selectedLead.disposition && (
+                                        <div className="flex flex-col gap-0.5">
+                                            <span className="text-[10px] text-zinc-500 uppercase font-semibold">Disposition</span>
+                                            <span className="text-zinc-100 font-medium">{selectedLead.disposition}</span>
+                                        </div>
+                                    )}
+                                    {selectedLead.failureReason && (
+                                        <div className="flex flex-col gap-0.5 col-span-2">
+                                            <span className="text-[10px] text-zinc-500 uppercase font-semibold">Failure Reason</span>
+                                            <span className="text-red-400">{selectedLead.failureReason}</span>
+                                        </div>
+                                    )}
+                                    <div className="flex flex-col gap-0.5">
+                                        <span className="text-[10px] text-zinc-500 uppercase font-semibold">Attempts</span>
+                                        <span className="text-zinc-200">{selectedLead.attemptCount || 0} attempts</span>
+                                    </div>
+                                    {(selectedLead.callLog?.durationSeconds || selectedLead.lastCallDurationSeconds) ? (
+                                        <div className="flex flex-col gap-0.5">
+                                            <span className="text-[10px] text-zinc-500 uppercase font-semibold">Call Duration</span>
+                                            <span className="text-zinc-200">{formatDuration(selectedLead.callLog?.durationSeconds || selectedLead.lastCallDurationSeconds)}</span>
+                                        </div>
+                                    ) : null}
+                                    {selectedLead.calledAt && (
+                                        <div className="flex flex-col gap-0.5 col-span-2">
+                                            <span className="text-[10px] text-zinc-500 uppercase font-semibold">Dial Time</span>
+                                            <span className="text-zinc-300">{new Date(selectedLead.calledAt).toLocaleString()}</span>
+                                        </div>
+                                    )}
+                                    {selectedLead.status === 'retry_scheduled' && selectedLead.nextRetryAt && (
+                                        <div className="flex flex-col gap-0.5 col-span-2">
+                                            <span className="text-[10px] text-zinc-500 uppercase font-semibold">Next Retry At</span>
+                                            <span className="text-blue-400">{new Date(selectedLead.nextRetryAt).toLocaleString()}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Dynamically Flattened custom leadData block */}
+                            {selectedLead.leadData && typeof selectedLead.leadData === 'object' && Object.keys(selectedLead.leadData).length > 0 && (
+                                <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 shadow-sm">
+                                    <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800/80 pb-2">Custom Lead Data Fields</h3>
+                                    <div className="grid grid-cols-2 gap-3 text-sm">
+                                        {Object.entries(selectedLead.leadData).map(([key, val]) => (
+                                            <div key={key} className="flex flex-col gap-0.5">
+                                                <span className="text-[10px] text-zinc-500 uppercase font-medium">{key.replace(/_/g, ' ')}</span>
+                                                <span className="text-zinc-200 font-mono text-xs">{String(val)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Text Summary */}
                             {selectedLead.callLog?.summary && (
-                                <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-5 flex flex-col gap-3">
-                                    <h3 className="text-sm font-semibold text-zinc-300 uppercase tracking-wide border-b border-zinc-800 pb-2">Call Summary</h3>
-                                    <p className="text-zinc-300 text-sm leading-relaxed">
+                                <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 flex flex-col gap-2.5 shadow-sm">
+                                    <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800/80 pb-2">Call Summary</h3>
+                                    <p className="text-zinc-300 text-sm leading-relaxed whitespace-pre-wrap">
                                         {selectedLead.callLog.summary}
                                     </p>
                                 </div>
                             )}
 
-                            {/* Transcript */}
-                            <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl flex flex-col flex-1 min-h-[300px]">
-                                <h3 className="text-sm font-semibold text-zinc-300 uppercase tracking-wide border-b border-zinc-800 p-5 pb-3">Transcript</h3>
-                                <div className="p-5 pt-2 flex flex-col gap-4">
+                            {/* Full Chat Transcript bubbles */}
+                            <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl flex flex-col min-h-[350px] shadow-sm">
+                                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800/80 p-4 pb-2.5">Call Conversation Transcript</h3>
+                                <div className="p-4 flex flex-col gap-3.5">
                                     {selectedLead.callLog?.transcript && Array.isArray(selectedLead.callLog.transcript) && selectedLead.callLog.transcript.length > 0 ? (
                                         selectedLead.callLog.transcript.map((msg: any, i: number) => {
                                             const role = msg?.role || 'system';
                                             const isAgent = role === 'agent' || role === 'assistant';
                                             const isUser = role === 'user';
                                             
-                                            // Handle defensive checking for message content
+                                            // Secure text parsing helper
                                             let content = "";
                                             if (typeof msg.content === 'string') {
                                                 content = msg.content;
@@ -439,14 +665,14 @@ export default function CampaignDetailsPage() {
                                             }
 
                                             return (
-                                                <div key={i} className={`flex flex-col gap-1 max-w-[90%] ${isAgent ? 'self-start' : isUser ? 'self-end' : 'self-center w-full'}`}>
-                                                    <span className={`text-[10px] uppercase font-semibold tracking-wider ${isAgent ? 'text-blue-500' : isUser ? 'text-emerald-500 self-end' : 'text-zinc-500 text-center'}`}>
+                                                <div key={i} className={`flex flex-col gap-1.5 max-w-[85%] ${isAgent ? 'self-start' : isUser ? 'self-end' : 'self-center w-full'}`}>
+                                                    <span className={`text-[9px] uppercase font-bold tracking-wider ${isAgent ? 'text-blue-500' : isUser ? 'text-emerald-500 self-end' : 'text-zinc-500 text-center'}`}>
                                                         {role}
                                                     </span>
-                                                    <div className={`p-3 rounded-xl text-sm ${
-                                                        isAgent ? 'bg-blue-500/10 border border-blue-500/20 text-zinc-200 rounded-tl-sm' :
-                                                        isUser ? 'bg-emerald-500/10 border border-emerald-500/20 text-zinc-200 rounded-tr-sm' :
-                                                        'bg-zinc-800/50 text-zinc-400 italic text-center w-full'
+                                                    <div className={`p-3 rounded-2xl text-sm ${
+                                                        isAgent ? 'bg-blue-600/10 border border-blue-500/25 text-zinc-200 rounded-tl-sm' :
+                                                        isUser ? 'bg-emerald-600/10 border border-emerald-500/25 text-zinc-200 rounded-tr-sm' :
+                                                        'bg-zinc-800/60 text-zinc-400 italic text-center w-full rounded-lg'
                                                     }`}>
                                                         {content}
                                                     </div>
@@ -454,8 +680,8 @@ export default function CampaignDetailsPage() {
                                             );
                                         })
                                     ) : (
-                                        <div className="text-zinc-500 italic text-center py-8">
-                                            {selectedLead.callLog ? "No transcript available for this call." : "Call hasn't been made yet."}
+                                        <div className="text-zinc-500 italic text-center py-10 text-sm">
+                                            {selectedLead.callLog ? "No chat transcription available for this call." : "Call hasn't been placed yet."}
                                         </div>
                                     )}
                                 </div>

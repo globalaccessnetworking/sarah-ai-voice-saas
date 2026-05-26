@@ -22,29 +22,28 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
             .where(eq(campaignNumbers.campaignId, campaignId))
             .orderBy(desc(campaignNumbers.calledAt));
 
-        // 3. Fetch Call Logs defensively
-        // Match metadata->>'campaign_id' = campaignId
+        // 3. Fetch Call Logs defensively and order by created_at DESC to guarantee newest first
         const rawLogs = await db.execute(sql`
-            SELECT id, room_name, status, duration_seconds, transcript, summary, metadata
+            SELECT id, room_name, status, duration_seconds, transcript, summary, recording_url, metadata, created_at
             FROM call_logs
             WHERE metadata->>'campaign_id' = ${campaignId}
+            ORDER BY created_at DESC
         `);
         
-        // Defensive mapping depending on DB driver (pg vs postgres.js)
         const logs = Array.isArray(rawLogs) ? rawLogs : (rawLogs as any).rows || [];
         
         // 4. Map Call Logs to Leads
         const mappedLeads = leads.map(lead => {
-            // Find all logs that belong to this lead 
-            // We check if room_name includes the lead.id
-            const leadLogs = logs.filter((log: any) => log.room_name && log.room_name.includes(lead.id));
+            const leadLogs = logs.filter((log: any) => {
+                const meta = log.metadata || {};
+                if (meta.lead_id === lead.id) return true;
+                if (meta.external_record_id === lead.id) return true;
+                if (log.room_name && log.room_name.includes(lead.id)) return true;
+                return false;
+            });
             
-            let latestLog = null;
-            if (leadLogs.length > 0) {
-                // sort by started_at if we had it, but we can just take the last one or rely on ID order.
-                // Assuming append order is fine, or we could sort by id string length / alphabetical or whatever.
-                latestLog = leadLogs[leadLogs.length - 1]; 
-            }
+            // Due to query sorting by created_at DESC, first element is the latest call log
+            const latestLog = leadLogs.length > 0 ? leadLogs[0] : null;
 
             return {
                 ...lead,
@@ -53,22 +52,96 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
                     status: latestLog.status,
                     durationSeconds: latestLog.duration_seconds,
                     transcript: latestLog.transcript,
-                    summary: latestLog.summary
+                    summary: latestLog.summary,
+                    recordingUrl: latestLog.recording_url
                 } : null
             };
         });
 
-        // 5. Calculate Stats from source of truth (campaign_numbers)
-        const total = leads.length;
-        const pending = leads.filter(l => l.status === 'pending').length;
-        const processing = leads.filter(l => l.status === 'processing').length;
-        const retry_scheduled = leads.filter(l => l.status === 'retry_scheduled').length;
-        const completed = leads.filter(l => l.status === 'completed').length;
-        // User requested: (completed + failed + no_answer + busy + disconnected_before_greeting + no_conversation) / total
-        const failedStatuses = ['failed', 'no_answer', 'busy', 'disconnected_before_greeting', 'no_conversation'];
-        const failed = leads.filter(l => l.status && failedStatuses.includes(l.status)).length;
+        // 5. Outcome Breakdown Helper (Priority: disposition -> failureReason -> status)
+        const getOutcome = (lead: any): string => {
+            const raw = lead.disposition || lead.failureReason || lead.status || '';
+            return String(raw).toLowerCase().trim().replace(/_/g, ' ');
+        };
+
+        // Aggregates initialization
+        let pending = 0;
+        let processing = 0;
+        let retry_scheduled = 0;
+        let completed = 0;
         
-        const progress = total === 0 ? 0 : Math.round(((completed + failed) / total) * 100);
+        let no_answer = 0;
+        let busy = 0;
+        let rejected = 0;
+        let no_conversation = 0;
+        let disconnected_before_greeting = 0;
+        let invalid_number = 0;
+        let other_failures = 0;
+
+        mappedLeads.forEach(lead => {
+            const status = lead.status || 'pending';
+            
+            if (status === 'pending') {
+                pending++;
+                return;
+            }
+            if (status === 'processing') {
+                processing++;
+                return;
+            }
+            if (status === 'retry_scheduled') {
+                retry_scheduled++;
+                return;
+            }
+
+            const outcome = getOutcome(lead);
+
+            // Match against prioritized outcomes
+            if (outcome.includes("no answer") || outcome === "no answer") {
+                no_answer++;
+            } else if (outcome.includes("busy")) {
+                busy++;
+            } else if (outcome.includes("rejected") || outcome.includes("decline") || outcome.includes("dnc") || outcome.includes("do not call")) {
+                rejected++;
+            } else if (outcome.includes("no conversation") || outcome === "no conversation") {
+                no_conversation++;
+            } else if (outcome.includes("disconnected before greeting") || outcome === "disconnected before greeting") {
+                disconnected_before_greeting++;
+            } else if (outcome.includes("invalid number") || outcome.includes("invalid_number") || outcome.includes("invalid")) {
+                invalid_number++;
+            } else if (outcome.includes("completed") || outcome === "completed" || outcome.includes("success")) {
+                completed++;
+            } else {
+                other_failures++;
+            }
+        });
+
+        // Failed represents the aggregate of all terminal failures
+        const failed = no_answer + busy + rejected + no_conversation + disconnected_before_greeting + invalid_number + other_failures;
+        const total = leads.length;
+
+        // 6. Campaign Performance Metrics Math
+        // Completion Rate: (completed + failed terminal leads) / total
+        const completion_rate = total === 0 ? 0 : Math.round(((completed + failed) / total) * 100);
+
+        // Connect Rate: answered/conversation leads / attempted leads
+        const attemptedLeads = mappedLeads.filter(l => (l.attemptCount || 0) > 0);
+        
+        const answeredLeads = mappedLeads.filter(l => {
+            if ((l.attemptCount || 0) <= 0) return false;
+            const duration = l.callLog?.durationSeconds || l.lastCallDurationSeconds || 0;
+            return duration > 0;
+        });
+
+        const connect_rate = attemptedLeads.length === 0 ? 0 : Math.round((answeredLeads.length / attemptedLeads.length) * 100);
+
+        // Average Attempts: sum(attempt_count) / total leads
+        const totalAttempts = leads.reduce((sum, l) => sum + (l.attemptCount || 0), 0);
+        const average_attempts = total === 0 ? 0 : Math.round((totalAttempts / total) * 10) / 10;
+
+        // Average Duration: average of only leads/calls with duration > 0
+        const totalDuration = answeredLeads.reduce((sum, l) => sum + (l.callLog?.durationSeconds || l.lastCallDurationSeconds || 0), 0);
+        const average_duration = answeredLeads.length === 0 ? 0 : Math.round(totalDuration / answeredLeads.length);
 
         const stats = {
             total,
@@ -77,7 +150,18 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
             retry_scheduled,
             completed,
             failed,
-            progress
+            progress: completion_rate, // Completion rate is progress
+            no_answer,
+            busy,
+            rejected,
+            no_conversation,
+            disconnected_before_greeting,
+            invalid_number,
+            other_failures,
+            average_attempts,
+            average_duration,
+            connect_rate,
+            completion_rate
         };
 
         return NextResponse.json({
