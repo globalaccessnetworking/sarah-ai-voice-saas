@@ -35,12 +35,27 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         const leadDataKeys = new Set<string>();
         
         const mappedLeads = leads.map(lead => {
-            // Match log based on stable keys, falling back to room_name
+            // Match log based on prioritized stable keys & robust fallbacks
             const leadLogs = logs.filter((log: any) => {
                 const meta = log.metadata || {};
+                const roomName = log.room_name || '';
+                const phone = lead.phone || '';
+                
+                // Priority 1: metadata.lead_id = lead.id
                 if (meta.lead_id === lead.id) return true;
+                
+                // Priority 2: metadata.external_record_id = lead.id
                 if (meta.external_record_id === lead.id) return true;
-                if (log.room_name && log.room_name.includes(lead.id)) return true;
+                
+                // Priority 3: metadata.campaign_id = campaign.id AND room_name includes phone
+                if (meta.campaign_id === campaignId && phone && roomName.includes(phone)) return true;
+                
+                // Priority 4: room_name includes lead.id
+                if (roomName.includes(lead.id)) return true;
+                
+                // Priority 5: room_name includes phone
+                if (phone && roomName.includes(phone)) return true;
+                
                 return false;
             });
             

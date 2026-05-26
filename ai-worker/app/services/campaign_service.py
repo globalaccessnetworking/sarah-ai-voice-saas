@@ -116,7 +116,8 @@ def mark_campaign_call_completed(campaign_id: str, lead_id: str, duration: int =
             cur.execute(
                 """
                 UPDATE campaign_numbers 
-                SET status = 'completed', called_at = %s, last_call_duration_seconds = %s, disposition = 'success'
+                SET status = 'completed', called_at = %s, last_call_duration_seconds = %s, disposition = 'success',
+                    failure_reason = NULL, next_retry_at = NULL
                 WHERE id = %s AND campaign_id = %s
                 """,
                 (datetime.utcnow(), duration, lead_id, campaign_id)
