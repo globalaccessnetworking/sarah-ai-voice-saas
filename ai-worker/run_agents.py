@@ -5424,7 +5424,12 @@ The opening message has already been delivered to the user automatically by the 
                     last_logged_attrs = None
                     first_obs_logged = False
                     
-                    max_wait = 15.0
+                    try:
+                        max_wait = float(os.getenv("OUTBOUND_SIP_ANSWER_TIMEOUT_SEC", "30"))
+                    except (ValueError, TypeError):
+                        max_wait = 30.0
+                    max_wait = max(5.0, min(max_wait, 120.0))
+                    logger.info(f"[SIP_ANSWER_WAIT] timeout_sec={max_wait}")
                     status_keys = [
                         "sip.callStatus", "sip.call_status", "callStatus", 
                         "call_status", "status", "sipCallStatus"

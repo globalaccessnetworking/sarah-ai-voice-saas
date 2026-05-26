@@ -283,7 +283,7 @@ class CampaignRefillWorker:
 
     async def run(self):
         interval = float(os.getenv("CAMPAIGN_REFILL_INTERVAL_SEC", 5))
-        logger.info(f"[CampaignRefill] Starting Campaign Refill loop with interval={interval}s...")
+        logger.info(f"[CampaignRefill] started scan_interval_sec={interval}")
         while True:
             self.process_campaigns()
             await asyncio.sleep(interval)

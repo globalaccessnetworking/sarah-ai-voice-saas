@@ -170,12 +170,12 @@ def mark_campaign_call_failed(campaign_id: str, lead_id: str, reason: str = "", 
             disposition = reason[:50] if reason else "failed"
             
             is_retryable = attempt_count < retry_attempts
-            logger.info(f"[RetryRules] failure reason={reason} retryable={str(is_retryable).lower()} attempt={attempt_count} max_attempts={retry_attempts}")
+            logger.info(f"[RetryRules] failure reason={reason} retryable={str(is_retryable).lower()} attempt={attempt_count} max_attempts={retry_attempts} retry_delay_seconds={retry_delay_seconds}")
             
             if is_retryable:
                 # Schedule retry
                 next_retry_dt = datetime.utcnow() + timedelta(seconds=retry_delay_seconds)
-                logger.info(f"[RetryRules] scheduling retry lead={lead_id} next_retry_at={next_retry_dt.isoformat()}")
+                logger.info(f"[RetryRules] scheduling retry lead={lead_id} next_retry_at={next_retry_dt.isoformat()} retry_delay_seconds={retry_delay_seconds}")
                 cur.execute(
                     """
                     UPDATE campaign_numbers 
@@ -191,7 +191,7 @@ def mark_campaign_call_failed(campaign_id: str, lead_id: str, reason: str = "", 
                 )
             else:
                 # Max retries reached, fail permanently
-                logger.info(f"[RetryRules] final failed lead={lead_id} reason={reason}")
+                logger.info(f"[RetryRules] final failed lead={lead_id} reason={reason} attempt={attempt_count} max_attempts={retry_attempts} retry_delay_seconds={retry_delay_seconds}")
                 cur.execute(
                     """
                     UPDATE campaign_numbers 
