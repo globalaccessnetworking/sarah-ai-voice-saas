@@ -17,13 +17,13 @@ def clean_number(phone_number: str) -> str:
     return phone_number.replace("+", "").replace(" ", "").replace("-", "").strip()
 
 
-async def make_outbound_call(phone_number: str, trunk_id: str):
+async def make_outbound_call(phone_number: str, trunk_id: str, opening_message: str = None):
     """
-    Manual Sarah outbound PSTN test.
+    Manual generic SaaS outbound PSTN test.
 
     Correct flow for your current SDK:
       1. Create outbound SIP participant.
-      2. Dispatch outbound-agent into the same room using AgentDispatch API.
+      2. Dispatch agent into the same room using AgentDispatch API.
       3. Pass metadata through participant_metadata and dispatch metadata.
 
     Do NOT use room_config here.
@@ -31,36 +31,66 @@ async def make_outbound_call(phone_number: str, trunk_id: str):
     """
 
     clean_phone = clean_number(phone_number)
-    room_name = f"outbound_{clean_phone}"
+    timestamp_val = int(time.time())
+    room_name = f"outbound_{clean_phone}_{timestamp_val}"
+
+    # Generic SaaS attributes
+    contact_name = "Valued Customer"
+    call_goal = "Demonstrate AI voice capability and answer user inquiries"
+    campaign_id = "manual_test_campaign"
+    campaign_name = "Manual Outbound Test"
+    ticket_id = f"MANUAL-{timestamp_val}"
+
+    config_block = {
+        "script": "Introduce the platform and answer any questions from the caller.",
+        "call_goal": call_goal,
+        "voice_provider": "cartesia",
+        "stt_provider": "deepgram",
+        "tts_provider": "cartesia",
+        "llm_provider": "openai"
+    }
+
+    if opening_message:
+        config_block["opening_message"] = opening_message
+        config_block["openingMessage"] = opening_message
+        config_block["outboundGreetingText"] = opening_message
+        config_block["initialGreeting"] = opening_message
 
     metadata_obj = {
         "type": "manual_outbound",
         "direction": "outbound",
+        "call_direction": "outbound",
         "agent_id": DEFAULT_AGENT_ID,
         "agent_name": AGENT_NAME,
         "phone": clean_phone,
         "to_number": clean_phone,
-        "citizen_name": "Respected Citizen",
-        "issue_type": "Manual outbound test",
-        "ticket_id": f"MANUAL-{int(time.time())}",
-        "config": {
-            "outboundGreetingText": (
-                "السلام علیکم، میں پنجاب ہیلپ لائن سے سارہ بول رہی ہوں۔ "
-                "کیا آپ میری آواز سن سکتے ہیں؟"
-            )
-        }
+        "contact_name": contact_name,
+        "lead_name": contact_name,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign_name,
+        "room_name": room_name,
+        "external_record_id": ticket_id,
+        
+        # Legacy Backward Compatibility Aliases
+        "citizen_name": contact_name,
+        "issue_type": call_goal,
+        "ticket_id": ticket_id,
+        
+        "config": config_block
     }
 
     metadata = json.dumps(metadata_obj, ensure_ascii=False)
 
     print("=" * 70)
-    print("Sarah Manual Outbound Call Test")
+    print("Generic AI Dialer Manual Outbound Call Test")
     print("=" * 70)
     print(f"Target phone      : {phone_number}")
     print(f"Clean phone       : {clean_phone}")
     print(f"SIP trunk ID      : {trunk_id}")
     print(f"Room name         : {room_name}")
     print(f"Agent dispatch    : {AGENT_NAME}")
+    if opening_message:
+        print(f"Opening message   : {opening_message}")
     print("=" * 70)
 
     async with api.LiveKitAPI(
@@ -76,8 +106,8 @@ async def make_outbound_call(phone_number: str, trunk_id: str):
                     sip_trunk_id=trunk_id,
                     sip_call_to=clean_phone,
                     room_name=room_name,
-                    participant_identity=f"sip_{clean_phone}",
-                    participant_name=f"Phone {clean_phone}",
+                    participant_identity=f"sip_{clean_phone}_{timestamp_val}",
+                    participant_name=contact_name,
                     participant_metadata=metadata,
                 )
             )
@@ -87,7 +117,7 @@ async def make_outbound_call(phone_number: str, trunk_id: str):
             if sip_call_id:
                 print(f"SIP call ID       : {sip_call_id}")
 
-            print("Step 2: Dispatching outbound-agent into the same room...")
+            print("Step 2: Dispatching AI agent into the same room...")
 
             dispatch = await lkapi.agent_dispatch.create_dispatch(
                 api.CreateAgentDispatchRequest(
@@ -98,14 +128,14 @@ async def make_outbound_call(phone_number: str, trunk_id: str):
             )
 
             dispatch_id = getattr(dispatch, "id", "") or getattr(dispatch, "dispatch_id", "")
-            print("✅ Agent dispatch created.")
+            print("✅ Agent dispatch explicitly created.")
             if dispatch_id:
                 print(f"Dispatch ID       : {dispatch_id}")
 
             print("=" * 70)
             print("✅ Outbound call launched successfully.")
             print(f"Room              : {room_name}")
-            print(f"SIP participant   : sip_{clean_phone}")
+            print(f"SIP participant   : sip_{clean_phone}_{timestamp_val}")
             print(f"AI agent          : {AGENT_NAME}")
             print("=" * 70)
             print("Watch logs:")
@@ -123,14 +153,15 @@ async def make_outbound_call(phone_number: str, trunk_id: str):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  python outbound_agent.py <phone_number> [trunk_id]")
+        print("  python outbound_agent.py <phone_number> [trunk_id] [opening_message]")
         print()
         print("Example:")
-        print("  python outbound_agent.py 923044749779 ST_ajkRrwumeHk5")
+        print("  python outbound_agent.py 923044749779 ST_ajkRrwumeHk5 \"Hi, this is a quick test call from our AI voice agent. Can you hear me clearly?\"")
         sys.exit(1)
 
     target_number = sys.argv[1].strip()
     target_trunk = sys.argv[2].strip() if len(sys.argv) > 2 else DEFAULT_TRUNK_ID
+    opening_msg = sys.argv[3].strip() if len(sys.argv) > 3 else None
 
     required = ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]
     missing = [key for key in required if not os.getenv(key)]
@@ -139,4 +170,4 @@ if __name__ == "__main__":
         print(f"❌ Missing environment variables: {', '.join(missing)}")
         sys.exit(1)
 
-    asyncio.run(make_outbound_call(target_number, target_trunk))
+    asyncio.run(make_outbound_call(target_number, target_trunk, opening_msg))

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Search, Plus, Play, Pause, Square, Trash2, Megaphone, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { Search, Plus, Play, Pause, Square, Trash2, Megaphone, CheckCircle2, XCircle, Clock, Eye } from "lucide-react";
 import Link from "next/link";
 
 interface Campaign {
@@ -193,7 +193,9 @@ export default function CampaignsPage() {
                                         return (
                                             <tr key={campaign.id}>
                                                 <td className="font-medium text-white">
-                                                    {campaign.name}
+                                                    <Link href={`/telephony/campaigns/${campaign.id}`} className="hover:text-blue-400 hover:underline transition-colors">
+                                                        {campaign.name}
+                                                    </Link>
                                                 </td>
                                                 <td>
                                                     <span className={`badge ${campaign.status === "running" ? "badge-success" :
@@ -226,6 +228,13 @@ export default function CampaignsPage() {
                                                 </td>
                                                 <td className="text-right">
                                                     <div className="flex items-center justify-end gap-2">
+                                                        <Link
+                                                            href={`/telephony/campaigns/${campaign.id}`}
+                                                            className="p-2 text-zinc-400 hover:text-blue-400 hover:bg-zinc-800 rounded-md transition-colors"
+                                                            title="View Details"
+                                                        >
+                                                            <Eye size={16} />
+                                                        </Link>
                                                         {campaign.status === "idle" || campaign.status === "paused" ? (
                                                             <button
                                                                 onClick={() => handleUpdateStatus(campaign.id, "running")}

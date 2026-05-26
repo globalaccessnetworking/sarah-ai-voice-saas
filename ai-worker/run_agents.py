@@ -3576,7 +3576,7 @@ async def get_active_ticket_from_db(caller_phone: str):
 async def entrypoint(ctx: JobContext):
     """Voice assistant entrypoint"""
     # --- Global Scope Audit: Guaranteed Variable Initialization ---
-    is_telephony_agent = getattr(ctx.job, 'agent_name', None) == "telephony-agent"
+    is_telephony_agent = getattr(ctx.job, 'agent_name', None) in ("telephony-agent", "outbound-agent")
     is_inbound_worker = os.getenv("WORKER_MODE") == "inbound"
     auto_record_enabled = False # Default policy
     agent_slug = ""
@@ -3640,6 +3640,9 @@ async def entrypoint(ctx: JobContext):
             if rmeta.get("agentId") and not agent_slug:
                 agent_slug = rmeta.get("agentId")
                 logger.info(f"Room metadata routing detected agentId: {agent_slug}")
+            if rmeta.get("agent_name") and not agent_slug:
+                agent_slug = rmeta.get("agent_name")
+                logger.info(f"Room metadata routing detected agent_name: {agent_slug}")
         except json.JSONDecodeError:
             pass
 
@@ -3659,7 +3662,12 @@ async def entrypoint(ctx: JobContext):
                         break
                 except: pass
 
-    agent_slug = "outbound-sarah-robocall"
+    # If this is an outbound call missing a slug, check the environment fallback or use generic default
+    is_outbound_call = getattr(ctx.job, 'agent_name', None) == "outbound-agent" or not is_inbound_worker
+    if not agent_slug and is_outbound_call:
+        agent_slug = os.environ.get("DEFAULT_OUTBOUND_AGENT_SLUG", "outbound-agent")
+        logger.info(f"Using default outbound agent slug fallback: {agent_slug}")
+
     # Step D: Configuration Fetch & Active Fallback
     agent_config = None
     
@@ -3964,8 +3972,10 @@ async def entrypoint(ctx: JobContext):
     tool_instructions = agent_config.get("tool_instructions", "")
     initial_greeting_raw = agent_config.get("initial_greeting", "").strip()
 
-    # Fancy Suthra Punjab prompt & greeting injection
-    if "pioneer" in agent_name.lower():
+    # Fancy Suthra Punjab prompt & greeting injection (Legacy Complaint Agents Only)
+    is_legacy_complaint_agent = agent_config.get("is_complaint_agent", False) or "pioneer" in agent_slug.lower() or "suthra" in agent_slug.lower()
+    
+    if is_legacy_complaint_agent:
         # 1. SCRUBBING: Remove any stale instructions from the database prompt to prevent conflicts
         import re
         # This matches # or ## ESCALATION PROTOCOL (and HANGUP) and everything until the next header or end of string
@@ -4006,7 +4016,14 @@ Your goal is to collect: **Issue, District, Address, Landmark, and Name/Phone**.
     # Extract caller data for variable parsing
     caller_data = {}
 
-    # 1. Start with room metadata (for outbound calls initiated via API)
+    # 1. Merge Job Metadata
+    if job_metadata:
+        try:
+            caller_data.update(json.loads(job_metadata))
+        except json.JSONDecodeError:
+            pass
+
+    # 2. Merge Room metadata (for outbound calls initiated via API)
     if room_metadata:
         try:
             rmeta = json.loads(room_metadata)
@@ -4702,7 +4719,9 @@ If the user confirms their issue is resolved or NOT resolved:
 3. OUTPUT NO TEXT. This is a critical atomic transition.
 """ if is_sarah_inbound_mode else ""
 
-    suthra_prompt_injection = f"""
+    suthra_prompt_injection = ""
+    if is_legacy_complaint_agent:
+        suthra_prompt_injection = f"""
 <STRICT_REALTIME_RULES>
 ## ESCALATION PROTOCOL (SILENT - TOOL ONLY)
 If the user mentions "{escalation_triggers}":
@@ -4723,10 +4742,18 @@ If the user says "{hangup_triggers}" or indicates they want to end the call:
 - This ensures the TTS can synthesize and play that first phrase immediately, cutting TTFB to under 1.5s.
 </STRICT_REALTIME_RULES>
 """
+
+    # Generic AI Dialer Instructions
+    dialer_instructions = """
+<SYSTEM_STATE>
+The opening message has already been delivered to the user automatically by the runtime. Do NOT repeat the opening greeting. Await the user's response and continue the conversation naturally.
+</SYSTEM_STATE>
+"""
+
     # Prepend dynamic rules to the system prompt
     current_prompt = agent_config.get("system_prompt", "")
-    agent_config["system_prompt"] = suthra_prompt_injection + "\n\n" + current_prompt
-    logger.info(f"Sovereign Prompt Injected with dynamic JSONB triggers.")
+    agent_config["system_prompt"] = dialer_instructions + "\n\n" + suthra_prompt_injection + "\n\n" + current_prompt
+    logger.info(f"Sovereign Prompt Injected with dynamic JSONB triggers and dialer instructions.")
 
     # Initialize 10-Tool Agentic Matrix via ToolProvider (Restored V9 Order)
     provider = None
