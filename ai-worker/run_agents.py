@@ -5436,6 +5436,7 @@ The opening message has already been delivered to the user automatically by the 
                     
                     saw_sip_participant = False
                     last_join_log_time = 0.0
+                    last_known_sip_status = None
                     
                     while time.time() - ts_wait_start < max_wait:
                         if getattr(session, "_call_ending", False) or getattr(session, "sip_participant_disconnected", False):
@@ -5476,8 +5477,8 @@ The opening message has already been delivered to the user automatically by the 
                         for key in status_keys:
                             val = attrs.get(key)
                             if val is not None:
-                                val_str = str(val).strip().lower()
-                                if val_str in ready_values:
+                                last_known_sip_status = str(val).strip().lower()
+                                if last_known_sip_status in ready_values:
                                     status_found = (key, val)
                                     break
                                     
@@ -5488,24 +5489,41 @@ The opening message has already been delivered to the user automatically by the 
                             
                         await asyncio.sleep(0.1)
                         
+                    skip_greeting_playback = False
                     if answer_confirmed:
                         media_settle_ms = int(os.getenv("OUTBOUND_MEDIA_SETTLE_MS", "400"))
                         logger.info(f"[OUTBOUND] media_settle_ms={media_settle_ms}; starting greeting")
                         await asyncio.sleep(media_settle_ms / 1000.0)
                         ts_delay_end = time.time()
                     else:
-                        if ctx.room.remote_participants and not getattr(session, "_call_ending", False) and not getattr(session, "sip_participant_disconnected", False):
-                            delay_sec = float(os.getenv("OUTBOUND_GREETING_DELAY_SEC", "2.5"))
-                            logger.info(f"[SIP_ANSWER_WAIT] Timeout waiting for active status. Falling back to OUTBOUND_GREETING_DELAY_SEC={delay_sec}s")
-                            await asyncio.sleep(delay_sec)
+                        ringing_statuses = {"ringing", "early", "dialing", "trying", "proceeding"}
+                        is_ringing = saw_sip_participant and (last_known_sip_status in ringing_statuses)
+                        
+                        if is_ringing:
+                            logger.info(f"[SIP_ANSWER_WAIT] timeout_unanswered status={last_known_sip_status}; skipping greeting")
+                            setattr(session, "disconnected_before_greeting", True)
+                            setattr(session, "_disconnected_before_greeting", True)
+                            skip_greeting_playback = True
                             ts_delay_end = time.time()
                         else:
-                            logger.info("[SIP_ANSWER_WAIT] Timeout or disconnected. Skipping fallback delay.")
-                            ts_delay_end = time.time()
+                            # Fallback delay only allowed if:
+                            # no SIP status was ever available but the participant is connected and there is no evidence of ringing
+                            if saw_sip_participant and last_known_sip_status is None and list(ctx.room.remote_participants.values()) and not getattr(session, "_call_ending", False) and not getattr(session, "sip_participant_disconnected", False):
+                                delay_sec = float(os.getenv("OUTBOUND_GREETING_DELAY_SEC", "2.5"))
+                                logger.info(f"[SIP_ANSWER_WAIT] Timeout waiting for active status. No SIP status was available but participant is connected. Falling back to OUTBOUND_GREETING_DELAY_SEC={delay_sec}s")
+                                await asyncio.sleep(delay_sec)
+                                ts_delay_end = time.time()
+                            else:
+                                logger.info(f"[SIP_ANSWER_WAIT] Timeout or disconnected. status={last_known_sip_status}. Skipping fallback delay.")
+                                setattr(session, "disconnected_before_greeting", True)
+                                setattr(session, "_disconnected_before_greeting", True)
+                                skip_greeting_playback = True
+                                ts_delay_end = time.time()
                     
-                    if not list(ctx.room.remote_participants.values()):
-                        logger.warning("[OUTBOUND] SIP participant disconnected before greeting; skipping initial greeting.")
+                    if skip_greeting_playback or not list(ctx.room.remote_participants.values()):
+                        logger.warning("[OUTBOUND] SIP participant disconnected or timeout unanswered; skipping initial greeting.")
                         setattr(session, "_disconnected_before_greeting", True)
+                        setattr(session, "disconnected_before_greeting", True)
                     else:
                         greeting_mode = os.getenv("OUTBOUND_GREETING_MODE", "session_say").strip().lower()
                         use_fast_tts = greeting_mode == "cached_pcm"
