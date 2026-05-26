@@ -69,8 +69,8 @@ export async function POST(
             insertBatch.push({
                 campaignId: id,
                 phone,
-                name: n.name || null,
-                companyName: n.companyName || null,
+                name: n.name || (n.leadData ? n.leadData.name : null) || null,
+                companyName: n.companyName || (n.leadData ? (n.leadData.company_name || n.leadData.companyName) : null) || null,
                 status: 'pending',
                 // leadData contains ALL normalized columns (original + canonical keys)
                 leadData: n.leadData || null,

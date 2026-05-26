@@ -61,8 +61,8 @@ export async function POST(request: Request) {
             const numbersData = body.numbers.map((n: any) => ({
                 campaignId: campaign.id,
                 phone: n.phone,
-                name: n.name || null,
-                companyName: n.companyName || null,
+                name: n.name || (n.leadData ? n.leadData.name : null) || null,
+                companyName: n.companyName || (n.leadData ? (n.leadData.company_name || n.leadData.companyName) : null) || null,
                 status: 'pending',
                 leadData: n.leadData || null
             }));

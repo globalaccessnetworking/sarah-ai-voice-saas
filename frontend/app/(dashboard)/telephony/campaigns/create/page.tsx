@@ -163,8 +163,8 @@ export default function CreateCampaignPage() {
     const handleImportComplete = (leads: ParsedLead[]) => {
         const mapped = leads.map((l) => ({
             phone: l.phone,
-            name: l.name || undefined,
-            companyName: l.company_name || undefined,
+            name: l.name || (l.lead_data ? l.lead_data.name : undefined) || undefined,
+            companyName: l.company_name || (l.lead_data ? (l.lead_data.company_name || l.lead_data.companyName) : undefined) || undefined,
             leadData: l.lead_data,
         }));
         setNumbers((prev) => [...prev, ...mapped]);
