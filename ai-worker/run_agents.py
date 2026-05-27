@@ -3881,23 +3881,42 @@ async def entrypoint(ctx: JobContext):
             # 2. Add explicit startup log per call
             logger.info(f"[VICIDIAL_CONTEXT] lookup_enabled=true room={ctx.room.name} job_id={ctx.job.id if ctx.job else 'UNKNOWN'}")
             
-            # Wait up to 5 seconds for a remote participant with SIP attributes to join
+            # Connect to room early if not already connected, so we can see remote participants and their SIP attributes
+            is_already_connected = ctx.room and (
+                str(getattr(ctx.room, "connection_state", "")).lower() == "connected" or
+                "connected" in str(getattr(ctx.room, "connection_state", "")).lower()
+            )
+            if not is_already_connected:
+                logger.info("[VICIDIAL_CONTEXT] Connecting to room early for ViciDial lookup...")
+                try:
+                    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+                    logger.info("[VICIDIAL_CONTEXT] Early room connection successful")
+                except Exception as conn_err:
+                    logger.error(f"[VICIDIAL_CONTEXT] Early room connection failed: {conn_err}")
+
+            # Wait up to OUTBOUND_SIP_ANSWER_TIMEOUT_SEC seconds for a remote participant with SIP attributes to join
             import time
             has_sip_attributes = False
             sip_attrs = {}
+            seen_identity = None
             wait_start = time.time()
-            current_parts = []
+            last_deferred_log_time = 0.0
             
-            while time.time() - wait_start < 5.0:
-                current_parts = []
-                for p in ctx.room.remote_participants.values():
-                    p_attrs = getattr(p, "attributes", {}) or {}
-                    sip_subset = {k: v for k, v in p_attrs.items() if k.startswith("sip.")}
-                    current_parts.append({
-                        "identity": p.identity,
-                        "attributes_keys": list(p_attrs.keys()),
-                        "sip_attrs_subset": sip_subset
-                    })
+            try:
+                max_wait = float(os.getenv("OUTBOUND_SIP_ANSWER_TIMEOUT_SEC", "30"))
+            except (ValueError, TypeError):
+                max_wait = 30.0
+            max_wait = max(5.0, min(max_wait, 120.0))
+            
+            while time.time() - wait_start < max_wait:
+                # Safety check: if room connection is lost, break
+                is_room_disconnected = ctx.room and (
+                    str(getattr(ctx.room, "connection_state", "")).lower() == "disconnected" or
+                    "disconnected" in str(getattr(ctx.room, "connection_state", "")).lower()
+                )
+                if is_room_disconnected:
+                    logger.info("[VICIDIAL_CONTEXT] Room disconnected during lookup wait")
+                    break
                 
                 # Check if we have remote participants with SIP attributes
                 for p in ctx.room.remote_participants.values():
@@ -3905,13 +3924,37 @@ async def entrypoint(ctx: JobContext):
                     if any(str(k).startswith("sip.") for k in p_attrs.keys()):
                         has_sip_attributes = True
                         sip_attrs = p_attrs
+                        seen_identity = p.identity
                         break
                 
                 if has_sip_attributes:
                     break
-                await asyncio.sleep(0.2)
+                
+                # Log deferred reason once per second
+                now = time.time()
+                elapsed_ms = int((now - wait_start) * 1000)
+                if now - last_deferred_log_time >= 1.0:
+                    logger.info(f"[VICIDIAL_CONTEXT] deferred reason=no_sip_participant_yet elapsed_ms={elapsed_ms}")
+                    last_deferred_log_time = now
+                
+                await asyncio.sleep(0.25)
+                
+            elapsed_ms = int((time.time() - wait_start) * 1000)
+            if has_sip_attributes:
+                logger.info(f"[VICIDIAL_CONTEXT] participant_seen elapsed_ms={elapsed_ms} identity={seen_identity}")
+            else:
+                logger.info(f"[VICIDIAL_CONTEXT] final_timeout_no_participant timeout_sec={max_wait}")
                 
             # Log participant diagnostics before candidate generation
+            current_parts = []
+            for p in ctx.room.remote_participants.values():
+                p_attrs = getattr(p, "attributes", {}) or {}
+                sip_subset = {k: v for k, v in p_attrs.items() if k.startswith("sip.")}
+                current_parts.append({
+                    "identity": p.identity,
+                    "attributes_keys": list(p_attrs.keys()),
+                    "sip_attrs_subset": sip_subset
+                })
             logger.info(f"[VICIDIAL_CONTEXT] participants={current_parts}")
             
             if not has_sip_attributes:
@@ -3920,6 +3963,8 @@ async def entrypoint(ctx: JobContext):
                 else:
                     logger.info("[VICIDIAL_CONTEXT] skipped reason=no_sip_participant_after_wait")
             else:
+                # Define call_id safely early to prevent NameError at line 4089
+                call_id = sip_attrs.get("sip.callID") or (ctx.job.id if ctx.job else ctx.room.name)
                 # 3. Build lookup candidates from all SIP attributes in exact priority order
                 raw_candidates = []
                 
@@ -4673,12 +4718,19 @@ Your goal is to collect: **Issue, District, Address, Landmark, and Name/Phone**.
         raise
 
     # Connect to room - in text mode, don't subscribe to audio
-    if test_mode == "text":
-        await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_NONE)
-        logger.info("Connected in text mode (no audio subscription)")
+    is_already_connected = ctx.room and (
+        str(getattr(ctx.room, "connection_state", "")).lower() == "connected" or
+        "connected" in str(getattr(ctx.room, "connection_state", "")).lower()
+    )
+    if not is_already_connected:
+        if test_mode == "text":
+            await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_NONE)
+            logger.info("Connected in text mode (no audio subscription)")
+        else:
+            await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+            logger.info("Connected in voice mode (audio subscription)")
     else:
-        await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
-        logger.info("Connected in voice mode (audio subscription)")
+        logger.info(f"Already connected to room (connection_state={ctx.room.connection_state})")
 
     # Forced Auto-record for Sarah (Agent under development)
     auto_record_enabled = True
