@@ -3830,8 +3830,7 @@ async def entrypoint(ctx: JobContext):
         except json.JSONDecodeError:
             pass
 
-    # Step C: Special Worker Logic (Dynamic Fallback & SIP Attributes)
-    # Inbound Workers: Attempt to resolve identity via SIP before fetching config
+    # Step C: Special Inbound Worker Logic (Dynamic Fallback via SIP to_number rule)
     if is_inbound_worker and (not agent_slug or is_telephony_agent):
         for p in ctx.room.remote_participants.values():
             attrs = getattr(p, 'attributes', {}) or {}
@@ -3846,63 +3845,149 @@ async def entrypoint(ctx: JobContext):
                         break
                 except: pass
 
-        # --- Mandatory safety correction: Feature Flag Guarded ViciDial Integration ---
-        is_vicidial_enabled = os.getenv("VICIDIAL_INTEGRATION_ENABLED", "false").lower() == "true"
-        logger.info(f"[VICIDIAL_CONTEXT] lookup_enabled={is_vicidial_enabled}")
-        
-        if is_vicidial_enabled:
-            caller_phone = ""
-            call_id = ""
+    # --- Unified highly-robust ViciDial Context Lookup & Resolution ---
+    is_vicidial_enabled = os.getenv("VICIDIAL_INTEGRATION_ENABLED", "false").lower() == "true"
+    
+    # Check if job metadata source is missing
+    try:
+        meta_obj_for_check = json.loads(job_metadata) if job_metadata else {}
+    except:
+        meta_obj_for_check = {}
+    source_metadata_missing = not meta_obj_for_check.get("source")
+    
+    if is_vicidial_enabled and source_metadata_missing:
+        # Wait up to 5 seconds for a remote participant with SIP attributes to join
+        import time
+        has_sip_attributes = False
+        sip_attrs = {}
+        wait_start = time.time()
+        while time.time() - wait_start < 5.0:
             for p in ctx.room.remote_participants.values():
-                attrs = getattr(p, 'attributes', {}) or {}
-                caller_phone = attrs.get("sip.phoneNumber") or attrs.get("sip.callerNumber") or ""
-                call_id = attrs.get("sip.callID") or ""
-                if caller_phone or call_id:
+                p_attrs = getattr(p, "attributes", {}) or {}
+                if any(str(k).startswith("sip.") for k in p_attrs.keys()):
+                    has_sip_attributes = True
+                    sip_attrs = p_attrs
                     break
+            if has_sip_attributes:
+                break
+            await asyncio.sleep(0.2)
             
-            # Fallback to room name pattern for phone number
-            if not caller_phone and ctx.room.name:
+        if has_sip_attributes:
+            # 2. Add explicit startup log per call
+            logger.info(f"[VICIDIAL_CONTEXT] lookup_enabled=true room={ctx.room.name} job_id={ctx.job.id if ctx.job else 'UNKNOWN'}")
+            
+            # 3. Build lookup candidates from all SIP attributes in exact priority order
+            raw_candidates = []
+            
+            # Helper to check and append candidates
+            def add_candidate(val, label):
+                if val:
+                    val_str = str(val).strip()
+                    if val_str:
+                        raw_candidates.append((val_str, label))
+
+            # 1. SIP header X-ViciDial-UniqueID
+            unique_id_val = ""
+            for k, v in sip_attrs.items():
+                if k.lower() in ["sip.h.x-vicidial-uniqueid", "sip.h.uniqueid"]:
+                    unique_id_val = v
+                    break
+            add_candidate(unique_id_val, "uniqueid")
+            
+            # 2. SIP header X-ViciDial-Lead-ID
+            lead_id_val = ""
+            for k, v in sip_attrs.items():
+                if k.lower() in ["sip.h.x-vicidial-lead-id", "sip.h.leadid", "sip.h.lead_id"]:
+                    lead_id_val = v
+                    break
+            add_candidate(lead_id_val, "lead")
+            
+            # 3. sip.trunkPhoneNumber
+            add_candidate(sip_attrs.get("sip.trunkPhoneNumber"), "phone")
+            
+            # 4. user part of sip.h.to
+            h_to_val = ""
+            for k, v in sip_attrs.items():
+                if k.lower() in ["sip.h.to", "sip.h.To"]:
+                    h_to_val = v
+                    break
+            if h_to_val:
+                import re
+                user_match = re.search(r'(?:sip:)?([^@<>:]+)(?:@|:|$)', h_to_val)
+                if user_match:
+                    add_candidate(user_match.group(1), "phone")
+                else:
+                    add_candidate(h_to_val, "phone")
+                    
+            # 5. to_number (sip.calledNumber)
+            add_candidate(sip_attrs.get("sip.calledNumber"), "phone")
+            
+            # 6. room-name extracted phone
+            room_phone = ""
+            if ctx.room.name:
                 import re
                 phone_match = re.search(r'_?(\+?\d{10,15})_', ctx.room.name)
                 if phone_match:
-                    caller_phone = phone_match.group(1)
+                    room_phone = phone_match.group(1)
+            add_candidate(room_phone, "phone")
             
-            clean_phone = ""
-            if caller_phone:
-                import re
-                clean_phone = re.sub(r'[\+\s\-\(\)]', '', caller_phone)
-                
-            # Perform multi-key Redis lookups in strict priority: uniqueid -> lead_id -> phone
+            # 7. sip.phoneNumber only as final fallback
+            add_candidate(sip_attrs.get("sip.phoneNumber") or sip_attrs.get("sip.callerNumber"), "phone")
+            
+            # De-duplicate candidates while preserving order
+            seen = set()
+            candidates = []
+            for val, label in raw_candidates:
+                if val not in seen:
+                    seen.add(val)
+                    candidates.append((val, label))
+            
+            # Log candidates list
+            logger.info(f"[VICIDIAL_CONTEXT] lookup_candidates={[{'value': val, 'type': label} for val, label in candidates]}")
+            
+            # Perform sequential Redis lookups until we get a hit
             vicidial_ctx_raw = None
             matched_key = None
             
             try:
                 r = agent_storage.get_redis_client()
                 
-                # Priority 1: uniqueid
-                if call_id and not vicidial_ctx_raw:
-                    uniqueid_key = f"vicidial_context:uniqueid:{call_id}"
-                    vicidial_ctx_raw = r.get(uniqueid_key)
-                    if vicidial_ctx_raw:
-                        matched_key = uniqueid_key
-                
-                # Priority 2: phone
-                if clean_phone and not vicidial_ctx_raw:
-                    phone_key = f"vicidial_context:phone:{clean_phone}"
-                    vicidial_ctx_raw = r.get(phone_key)
-                    if vicidial_ctx_raw:
-                        matched_key = phone_key
-                        
-                # Priority 3: phone with leading zero/country prefix stripped
-                if clean_phone and not vicidial_ctx_raw:
-                    stripped_phone = clean_phone.lstrip("0").lstrip("1")
-                    # Try matching keys with patterns
-                    for key in r.keys("vicidial_context:phone:*"):
-                        if key.endswith(stripped_phone):
+                for val, label in candidates:
+                    if label == "uniqueid":
+                        key = f"vicidial_context:uniqueid:{val}"
+                        vicidial_ctx_raw = r.get(key)
+                        if vicidial_ctx_raw:
+                            matched_key = key
+                            break
+                    elif label == "lead":
+                        key = f"vicidial_context:lead:{val}"
+                        vicidial_ctx_raw = r.get(key)
+                        if vicidial_ctx_raw:
+                            matched_key = key
+                            break
+                    elif label == "phone":
+                        # Normalize phone to pure digits
+                        import re
+                        clean_candidate = re.sub(r'[\+\s\-\(\)]', '', val)
+                        if clean_candidate:
+                            # Try exact match
+                            key = f"vicidial_context:phone:{clean_candidate}"
                             vicidial_ctx_raw = r.get(key)
                             if vicidial_ctx_raw:
                                 matched_key = key
                                 break
+                            
+                            # Try wildcard endswith suffix match for prefix variance
+                            stripped_candidate = clean_candidate.lstrip("0").lstrip("1")
+                            if len(stripped_candidate) >= 7:
+                                for k in r.keys("vicidial_context:phone:*"):
+                                    if k.endswith(stripped_candidate):
+                                        vicidial_ctx_raw = r.get(k)
+                                        if vicidial_ctx_raw:
+                                            matched_key = k
+                                            break
+                                if vicidial_ctx_raw:
+                                    break
             except Exception as redis_err:
                 logger.error(f"[VICIDIAL_CONTEXT] Redis connection/lookup failed: {redis_err}")
                 
@@ -3938,7 +4023,8 @@ async def entrypoint(ctx: JobContext):
                                 meta_obj["campaign_id"] = resolved_mapping.get("id") # Unique mapping ID
                                 meta_obj["lead_id"] = v_lead_id
                                 meta_obj["external_record_id"] = v_lead_id
-                                meta_obj["phone"] = clean_phone
+                                # Set phone safely from vicidial context
+                                meta_obj["phone"] = vicidial_ctx.get("phone") or clean_phone
                                 meta_obj["contact_name"] = vicidial_ctx.get("contact_name") or "Customer"
                                 meta_obj["dynamic_vars"] = vicidial_ctx.get("lead_data", {})
                                 meta_obj["lead_data"] = vicidial_ctx.get("lead_data", {})
@@ -3957,6 +4043,8 @@ async def entrypoint(ctx: JobContext):
                                 meta_obj["agent_slug"] = mapped_slug
                                 
                                 job_metadata = json.dumps(meta_obj)
+                                if ctx.job:
+                                    ctx.job.metadata = job_metadata
                                 logger.info(f"[VICIDIAL_AGENT] override_applied=true agent_slug={mapped_slug}")
                             else:
                                 logger.warning(f"[VICIDIAL_AGENT] fallback reason=mapped_agent_inactive agent_slug={mapped_slug}")
@@ -3967,7 +4055,7 @@ async def entrypoint(ctx: JobContext):
                 except Exception as parse_err:
                     logger.error(f"[VICIDIAL_CONTEXT] Failed to parse cached payload: {parse_err}")
             else:
-                logger.info(f"[VICIDIAL_CONTEXT] lookup_miss phone={clean_phone} uniqueid={call_id}")
+                logger.info(f"[VICIDIAL_CONTEXT] lookup_miss targets={list(seen)}")
                 logger.warning("[VICIDIAL_AGENT] fallback reason=context_not_found")
 
     # If this is an outbound call missing a slug, check the environment fallback or use generic default
@@ -5454,6 +5542,7 @@ The opening message has already been delivered to the user automatically by the 
         greeting_audio_url = tools_settings.get("greeting_audio_url")
         
         # --- NEW GREETING RESOLUTION PRECEDENCE ---
+        call_tracker = None
         is_outbound_call_context = is_outbound_call or sip_metadata.get("direction") == "outbound" or ctx.room.name.startswith("outbound_")
         
         resolved_greeting = None
@@ -5475,7 +5564,7 @@ The opening message has already been delivered to the user automatically by the 
                 
                 if metadata_source == "vicidial":
                     src = "vicidial_mapping.opening_message"
-                    val = jm.get("vicidial_mapping", {}).get("opening_message")
+                    val = jm.get("opening_message") or jm.get("vicidial_mapping", {}).get("opening_message")
                 elif metadata_source == "inbound":
                     src = "inbound_route.greeting"
                     val = jm.get("inbound_route", {}).get("greeting")
