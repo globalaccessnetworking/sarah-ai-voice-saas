@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import redis from "@/lib/redis";
+import redis, { ensureRedisConnected, getSanitizedRedisTarget, isRedisClientConnected } from "@/lib/redis";
 
 // Safe authentication helper
 function isAuthorized(req: NextRequest): boolean {
@@ -84,14 +84,20 @@ export async function POST(req: NextRequest) {
         const securityPhrase = String(body.securityPhrase || body.security_phrase || "").trim();
         const comments = String(body.comments || "").trim();
         
-        // Dynamic custom fields payload
-        const rawCustomFields = body.leadData || body.lead_data || {};
+        // Dynamic custom fields payload - supports leadData, lead_data, customFields, or custom_fields
+        const rawCustomFields = body.custom_fields || body.customFields || body.leadData || body.lead_data || {};
         const leadData: Record<string, any> = {};
 
         // Merge standard custom fields with normalized keys
         if (typeof rawCustomFields === "object" && rawCustomFields !== null) {
             Object.entries(rawCustomFields).forEach(([k, v]) => {
-                leadData[k] = v;
+                // Safe normalized key (trimmed, lower_snake_case)
+                const cleanKey = String(k).trim().toLowerCase().replace(/[-\s]/g, "_");
+                leadData[cleanKey] = v;
+                // Also retain original key format to support exact matches
+                if (cleanKey !== k) {
+                    leadData[k] = v;
+                }
             });
         }
 
@@ -128,6 +134,7 @@ export async function POST(req: NextRequest) {
             vicidial_ingroup: vicidialIngroup,
             vicidial_call_uniqueid: callUniqueid,
             vendor_lead_code: vendorLeadCode,
+            custom_fields: rawCustomFields,
             lead_data: leadData,
             source: "vicidial",
             timestamp: new Date().toISOString()
@@ -136,45 +143,60 @@ export async function POST(req: NextRequest) {
         const serialized = JSON.stringify(contextPayload);
         const ttlSeconds = 3600; // 1-hour transient TTL
         
+        // Ensure Redis connection is up
+        await ensureRedisConnected();
+        
         // 4. Save to Redis under multiple lookup keys for collision protection
         const keysWritten: string[] = [];
 
         // Key 1: Phone Fallback
         const phoneKey = `vicidial_context:phone:${cleanPhone}`;
-        await redis.set(phoneKey, serialized);
-        // Expiry setting (EX: 3600) via raw client when available, or manual config
-        if (redis.expire) {
-            await redis.expire(phoneKey, ttlSeconds);
-        }
+        await redis.set(phoneKey, serialized, { EX: ttlSeconds });
         keysWritten.push(phoneKey);
 
         // Key 2: Unique call ID (if provided)
         if (callUniqueid) {
             const uniqueidKey = `vicidial_context:uniqueid:${callUniqueid}`;
-            await redis.set(uniqueidKey, serialized);
-            if (redis.expire) {
-                await redis.expire(uniqueidKey, ttlSeconds);
-            }
+            await redis.set(uniqueidKey, serialized, { EX: ttlSeconds });
             keysWritten.push(uniqueidKey);
         }
 
         // Key 3: ViciDial Lead ID (if provided)
         if (vicidialLeadId) {
             const leadKey = `vicidial_context:lead:${vicidialLeadId}`;
-            await redis.set(leadKey, serialized);
-            if (redis.expire) {
-                await redis.expire(leadKey, ttlSeconds);
-            }
+            await redis.set(leadKey, serialized, { EX: ttlSeconds });
             keysWritten.push(leadKey);
         }
 
-        console.log(`[VICIDIAL_CONTEXT] Saved transient context keys=${keysWritten.join(", ")} TTL=${ttlSeconds}s`);
+        // 5. Verification step: Check TTL of the primary written key (phoneKey)
+        let ttlCheck = -2;
+        try {
+            ttlCheck = await redis.ttl(phoneKey);
+        } catch (ttlErr) {
+            console.error("[VICIDIAL_CONTEXT] TTL verification check threw error:", ttlErr);
+        }
+
+        const isRealAndValid = isRedisClientConnected() && ttlCheck > 0;
+
+        if (!isRealAndValid) {
+            console.error(`[VICIDIAL_CONTEXT] Redis verification failed. Connected=${isRedisClientConnected()} TTL=${ttlCheck}`);
+            return NextResponse.json({
+                success: false,
+                error: "Redis verification failed. The key was not successfully written with a valid TTL.",
+                redis_target: getSanitizedRedisTarget(),
+                ttl_check: ttlCheck,
+                connected: isRedisClientConnected()
+            }, { status: 500 });
+        }
+
+        console.log(`[VICIDIAL_CONTEXT] Saved transient context keys=${keysWritten.join(", ")} verified_ttl=${ttlCheck}s target=${getSanitizedRedisTarget()}`);
 
         return NextResponse.json({
             success: true,
             message: "Transient ViciDial lead context saved successfully.",
             keys_written: keysWritten,
             ttl: ttlSeconds,
+            redis_target: getSanitizedRedisTarget(),
             data: contextPayload
         });
 

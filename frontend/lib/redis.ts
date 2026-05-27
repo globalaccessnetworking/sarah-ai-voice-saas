@@ -1,14 +1,17 @@
 // frontend/lib/redis.ts
 import { createClient } from 'redis';
 
-// 1. Safety Switch: Detect if we are on your Laptop or the VPS
-const isLocal = process.env.NODE_ENV === 'development' || !process.env.REDIS_URL;
-
-// 2. Initialize Real Client (Only runs on VPS)
-const redisClient = !isLocal ? createClient({ url: process.env.REDIS_URL }) : null;
-if (redisClient) {
-    redisClient.connect().catch((err) => console.error("Redis Connection Error:", err));
+// Resolve URL exactly like queue.ts
+let redisUrl = process.env.REDIS_URL;
+if (!redisUrl) {
+    const host = process.env.REDIS_HOST || '127.0.0.1';
+    const port = process.env.REDIS_PORT || '6379';
+    const password = process.env.REDIS_PASSWORD ? `:${process.env.REDIS_PASSWORD}@` : '';
+    redisUrl = `redis://${password}${host}:${port}`;
 }
+
+let redisClient: any = null;
+let isConnected = false;
 
 // 3. The "Mock" Object (This is what your Laptop uses)
 const redisMock = {
@@ -19,17 +22,90 @@ const redisMock = {
     hset: async () => 1,
     exists: async () => 0,
     publish: async () => 0,
+    expire: async () => true,
+    ttl: async () => -2,
+    isOpen: false
 };
 
-// 4. Create the final "redis" object
-const redis = isLocal ? redisMock : (redisClient as any);
+export function getSanitizedRedisTarget(): string {
+    let url = process.env.REDIS_URL;
+    if (!url) {
+        const host = process.env.REDIS_HOST || '127.0.0.1';
+        const port = process.env.REDIS_PORT || '6379';
+        url = `redis://${host}:${port}`;
+    }
+    try {
+        const parsed = new URL(url);
+        const host = parsed.host;
+        const db = parsed.pathname.replace("/", "") || "0";
+        return `${host}/db:${db}`;
+    } catch {
+        const match = url.match(/redis:\/\/(?:[^@]+@)?([^/]+)(?:\/(.+))?/);
+        if (match) {
+            return `${match[1]}/db:${match[2] || "0"}`;
+        }
+        return url;
+    }
+}
+
+// Initial server connection trigger
+if (typeof window === 'undefined') {
+    try {
+        redisClient = createClient({ url: redisUrl });
+        redisClient.on('error', (err: any) => {
+            console.error("[Redis] Client Error:", err);
+            isConnected = false;
+        });
+        redisClient.connect().then(() => {
+            console.log("[Redis] Connected to:", getSanitizedRedisTarget());
+            isConnected = true;
+        }).catch((err: any) => {
+            console.warn("[Redis] Connection failed, using mock client fallback:", err.message);
+            isConnected = false;
+        });
+    } catch (e) {
+        console.error("[Redis] Initialization failed:", e);
+    }
+}
+
+// Helper to ensure connection is alive before using
+export async function ensureRedisConnected(): Promise<boolean> {
+    if (!redisClient) return false;
+    if (isConnected) return true;
+    try {
+        if (!redisClient.isOpen) {
+            await redisClient.connect();
+        }
+        isConnected = true;
+        return true;
+    } catch (err) {
+        isConnected = false;
+        return false;
+    }
+}
+
+export function isRedisClientConnected(): boolean {
+    return isConnected;
+}
+
+// Proxied Client: If connected, use real client. Otherwise fallback to mock!
+const redis = new Proxy({}, {
+    get(target, prop) {
+        if (isConnected && redisClient) {
+            return (...args: any[]) => redisClient[prop](...args);
+        }
+        // Fallback to mock
+        return (redisMock as any)[prop];
+    }
+}) as any;
 
 /**
  * Pushes agent configuration to Redis for immediate worker pickup.
  * Maps Drizzle's camelCase object back to the snake_case format the Python worker expects.
  */
 export async function pushAgentToRedis(agent: any) {
-    if (isLocal || !redisClient) return true;
+    await ensureRedisConnected();
+    if (!isConnected || !redisClient) return true; // mock fallback for local development
 
     try {
         const agentData = {
@@ -118,7 +194,8 @@ export async function pushAgentToRedis(agent: any) {
  * Pushes system integrations (API keys) to Redis.
  */
 export async function syncIntegrationToRedis(provider: string, apiKey: string, config: any = {}) {
-    if (isLocal || !redisClient) return true;
+    await ensureRedisConnected();
+    if (!isConnected || !redisClient) return true;
 
     try {
         const data = {

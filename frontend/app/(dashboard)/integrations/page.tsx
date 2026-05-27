@@ -724,6 +724,16 @@ export default function IntegrationsPage() {
                                                     </div>
                                                 )}
 
+                                                {/* Agent Script summary */}
+                                                {m.script && (
+                                                    <div className="space-y-1">
+                                                        <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">Agent Script</span>
+                                                        <div className="bg-zinc-950/40 text-zinc-400 text-xs rounded-xl p-3 border border-zinc-850/50 leading-relaxed font-sans whitespace-pre-wrap break-words max-w-full">
+                                                            {m.script}
+                                                        </div>
+                                                    </div>
+                                                )}
+
                                                 {/* Action Buttons */}
                                                 <div className="flex gap-2 justify-end pt-1">
                                                     <button
@@ -839,7 +849,18 @@ export default function IntegrationsPage() {
                                                 />
                                             </div>
 
-                                            {/* Goals & Script */}
+                                            {/* Custom agent script */}
+                                            <div>
+                                                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-1.5">Agent Script (Optional)</label>
+                                                <textarea
+                                                    value={formScript}
+                                                    onChange={e => setFormScript(e.target.value)}
+                                                    placeholder="Be brief, helpful, and ask one question at a time..."
+                                                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-zinc-200 h-20 resize-none focus:outline-none focus:border-emerald-500 leading-relaxed font-sans placeholder-zinc-700"
+                                                />
+                                            </div>
+
+                                            {/* Goals & Status */}
                                             <div className="grid grid-cols-2 gap-3">
                                                 <div>
                                                     <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-1">Call Goal (Optional)</label>
