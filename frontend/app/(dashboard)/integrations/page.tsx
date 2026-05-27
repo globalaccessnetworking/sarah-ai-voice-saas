@@ -241,10 +241,20 @@ export default function IntegrationsPage() {
             const res = await fetch("/api/integrations/vicidial/mappings");
             if (res.ok) {
                 const data = await res.json();
-                setMappings(data);
+                const mappingsArray = Array.isArray(data)
+                    ? data
+                    : Array.isArray(data?.mappings)
+                    ? data.mappings
+                    : Array.isArray(data?.data)
+                    ? data.data
+                    : [];
+                setMappings(mappingsArray);
+            } else {
+                setMappings([]);
             }
         } catch (err) {
             console.error("Failed to load mappings", err);
+            setMappings([]);
         } finally {
             setLoadingMappings(false);
         }
@@ -255,11 +265,20 @@ export default function IntegrationsPage() {
             const res = await fetch("/api/agents");
             if (res.ok) {
                 const data = await res.json();
-                // Filter running / standard standard agents
-                setAgents(data);
+                const agentsArray = Array.isArray(data)
+                    ? data
+                    : Array.isArray(data?.agents)
+                    ? data.agents
+                    : Array.isArray(data?.data)
+                    ? data.data
+                    : [];
+                setAgents(agentsArray);
+            } else {
+                setAgents([]);
             }
         } catch (err) {
             console.error("Failed to load agents", err);
+            setAgents([]);
         }
     };
 
@@ -415,7 +434,7 @@ export default function IntegrationsPage() {
         const ok = Math.random() > 0.3;
         setTestResult(p => ({ ...p, [id]: ok ? "success" : "error" }));
         if (ok) {
-            setIntegrations(p => p.map(i => i.id === id ? { ...i, status: "connected", lastSync: "just now" } : i));
+            setIntegrations(p => (Array.isArray(p) ? p : []).map(i => i.id === id ? { ...i, status: "connected", lastSync: "just now" } : i));
         }
         setTesting(null);
     };
@@ -459,7 +478,7 @@ export default function IntegrationsPage() {
 
                     {activeTab === "connectors" && (
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                            {integrations.map(integ => {
+                            {(Array.isArray(integrations) ? integrations : []).map(integ => {
                                 const sc = statusConfig[integ.status];
                                 return (
                                     <div key={integ.id} className={`bg-zinc-900 border rounded-2xl p-5 flex flex-col gap-4 transition-all hover:shadow-lg ${integ.status === "error" ? "border-red-900/40" : integ.status === "connected" ? "border-emerald-900/30" : "border-zinc-800"}`}>
@@ -552,7 +571,7 @@ export default function IntegrationsPage() {
                             <button onClick={() => setConfiguring(null)} className="text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
                         </div>
                         <div className="space-y-4">
-                            {cfg.configFields.map(field => (
+                            {(cfg && Array.isArray(cfg.configFields) ? cfg.configFields : []).map(field => (
                                 <div key={field.key}>
                                     <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest block mb-2">{field.label}</label>
                                     <div className="relative">
@@ -629,14 +648,14 @@ export default function IntegrationsPage() {
                                     <div className="flex items-center justify-center py-12 text-zinc-500 text-xs gap-2">
                                         <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" /> Loading mapping configurations...
                                     </div>
-                                ) : mappings.length === 0 ? (
+                                ) : (!Array.isArray(mappings) || mappings.length === 0) ? (
                                     <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-8 text-center text-zinc-500 space-y-2">
                                         <Info className="w-8 h-8 text-zinc-600 mx-auto" />
                                         <p className="text-xs">No active ViciDial mappings defined. Incoming calls will use the default inbound fallback agent.</p>
                                     </div>
                                 ) : (
                                     <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-                                        {mappings.map((m) => (
+                                        {(Array.isArray(mappings) ? mappings : []).map((m) => (
                                             <div
                                                 key={m.id}
                                                 className={`bg-zinc-900 border rounded-2xl p-5 space-y-4 transition-all hover:bg-zinc-900/80 ${m.isActive ? "border-emerald-950/60" : "border-zinc-800 opacity-60"}`}
@@ -803,7 +822,7 @@ export default function IntegrationsPage() {
                                                     required
                                                 >
                                                     <option value="">-- Select Target Agent --</option>
-                                                    {agents.map(a => (
+                                                    {(Array.isArray(agents) ? agents : []).map(a => (
                                                         <option key={a.id} value={a.id}>{a.name} ({a.slug})</option>
                                                     ))}
                                                 </select>
@@ -937,9 +956,9 @@ export default function IntegrationsPage() {
 
                                                         <div className="space-y-1.5 font-mono text-[9px] text-zinc-500">
                                                             <div className="text-[9px] text-zinc-400 font-bold font-sans uppercase">Redis Keys Generated:</div>
-                                                            {simResult.redis_context?.keys_written.map((k: string) => (
+                                                            {Array.isArray(simResult.redis_context?.keys_written) ? simResult.redis_context.keys_written.map((k: string) => (
                                                                 <div key={k} className="bg-zinc-900 p-1 px-2 rounded-md break-all">{k}</div>
-                                                            ))}
+                                                            )) : null}
                                                         </div>
                                                     </div>
                                                 ) : (
