@@ -4,6 +4,34 @@ import logging
 import psycopg2
 from datetime import datetime
 
+def make_json_safe(value):
+    """
+    Recursively sanitizes values to be JSON-serializable.
+    Converts UUID -> str, datetime/date -> isoformat, Decimal -> float, etc.
+    """
+    import uuid
+    from decimal import Decimal
+    from datetime import datetime as dt, date
+    
+    if isinstance(value, dict):
+        return {str(k): make_json_safe(v) for k, v in value.items()}
+    elif isinstance(value, (list, tuple, set)):
+        return [make_json_safe(v) for v in value]
+    elif isinstance(value, uuid.UUID):
+        return str(value)
+    elif isinstance(value, (dt, date)):
+        return value.isoformat()
+    elif isinstance(value, Decimal):
+        return float(value)
+    elif value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    else:
+        try:
+            return str(value)
+        except Exception:
+            return None
+
+
 logger = logging.getLogger("ai_worker.services.call_history")
 
 # Global connection string
@@ -123,6 +151,9 @@ def create_call_record(call_id: str, agent_id: str, room_name: str, direction: s
             merged_metadata = {**existing_metadata}
             if metadata:
                 merged_metadata.update(metadata)
+            
+            # Sanitize metadata recursively before serialization
+            merged_metadata = make_json_safe(merged_metadata)
 
             if existing_id:
                 # Update existing record for this room_name to keep it canonical
@@ -373,6 +404,9 @@ def complete_call_record(call_id_or_room: str = None, final_payload: dict = None
                     # Skip database column fields that we write directly
                     if k not in ("summary", "duration", "duration_seconds", "transcript"):
                         merged_metadata[k] = v
+
+            # Sanitize metadata recursively before serialization
+            merged_metadata = make_json_safe(merged_metadata)
 
             logger.info(f"[CALL_LOG_PERSIST] action=metadata_merge room_name={room_name} id={canonical_id}")
 

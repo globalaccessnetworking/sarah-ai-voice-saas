@@ -3757,6 +3757,34 @@ async def get_active_ticket_from_db(caller_phone: str):
         return None
 
 
+def make_json_safe(value):
+    """
+    Recursively sanitizes values to be JSON-serializable.
+    Converts UUID -> str, datetime/date -> isoformat, Decimal -> float, etc.
+    """
+    import uuid
+    from decimal import Decimal
+    from datetime import datetime, date
+    
+    if isinstance(value, dict):
+        return {str(k): make_json_safe(v) for k, v in value.items()}
+    elif isinstance(value, (list, tuple, set)):
+        return [make_json_safe(v) for v in value]
+    elif isinstance(value, uuid.UUID):
+        return str(value)
+    elif isinstance(value, (datetime, date)):
+        return value.isoformat()
+    elif isinstance(value, Decimal):
+        return float(value)
+    elif value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    else:
+        try:
+            return str(value)
+        except Exception:
+            return None
+
+
 async def entrypoint(ctx: JobContext):
     """Voice assistant entrypoint"""
     # --- Unconditional ViciDial Startup Diagnostic Log ---
@@ -4097,6 +4125,9 @@ async def entrypoint(ctx: JobContext):
                             resolved_mapping = await agent_storage.resolve_vicidial_agent_mapping(v_camp, v_list, v_ingroup)
                             
                             if resolved_mapping:
+                                # 1. Sanitize mapping object returned by agent_storage before merging into metadata
+                                resolved_mapping = make_json_safe(resolved_mapping)
+                                
                                 mapped_slug = resolved_mapping.get("agent_slug") or resolved_mapping.get("agent_id")
                                 if mapped_slug:
                                     # Verify mapped agent exists and is active
@@ -4136,10 +4167,12 @@ async def entrypoint(ctx: JobContext):
                                         meta_obj["agent_id"] = target_config.get("id")
                                         meta_obj["agent_slug"] = mapped_slug
                                         
+                                        # 2. Sanitize final ViciDial metadata payload before json serialization
+                                        meta_obj = make_json_safe(meta_obj)
                                         job_metadata = json.dumps(meta_obj)
                                         if ctx.job:
                                             ctx.job.metadata = job_metadata
-                                        logger.info(f"[VICIDIAL_AGENT] override_applied=true agent_slug={mapped_slug}")
+                                        logger.info(f"[VICIDIAL_AGENT] override_applied=true agent_slug={mapped_slug} mapping_id={resolved_mapping.get('id')}")
                                     else:
                                         logger.warning(f"[VICIDIAL_AGENT] fallback reason=mapped_agent_inactive agent_slug={mapped_slug}")
                                 else:
