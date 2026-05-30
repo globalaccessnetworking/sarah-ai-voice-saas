@@ -227,6 +227,16 @@ export default function IntegrationsPage() {
     const [simulating, setSimulating] = useState(false);
     const [simResult, setSimResult] = useState<any>(null);
 
+    // AI JOIN state
+    const [aiJoinPhone, setAiJoinPhone] = useState("");
+    const [aiJoinConf, setAiJoinConf] = useState("");
+    const [aiJoinLeadId, setAiJoinLeadId] = useState("");
+    const [aiJoinFirstName, setAiJoinFirstName] = useState("");
+    const [aiJoinLastName, setAiJoinLastName] = useState("");
+    const [aiJoinCampaign, setAiJoinCampaign] = useState("");
+    const [aiJoining, setAiJoining] = useState(false);
+    const [aiJoinResult, setAiJoinResult] = useState<any>(null);
+
     // Fetch mappings and active agents
     useEffect(() => {
         if (configuring === "vicidial") {
@@ -992,6 +1002,112 @@ export default function IntegrationsPage() {
                                         )}
                                     </div>
                                 )}
+
+                                {/* ── Phase 10: AI JOIN Live Test Panel ── */}
+                                <div className="bg-zinc-900 border border-emerald-900/30 rounded-2xl p-5 space-y-4 mt-2">
+                                    <div className="border-b border-zinc-800 pb-3">
+                                        <h4 className="text-sm font-bold text-white flex items-center gap-1.5">
+                                            <Zap className="w-4 h-4 text-emerald-400" /> AI JOIN Bridge
+                                        </h4>
+                                        <p className="text-[10px] text-zinc-500 mt-0.5">Originate AI agent directly into a live MeetMe conference via Asterisk AMI.</p>
+                                    </div>
+
+                                    {/* Endpoint info */}
+                                    <div className="space-y-2">
+                                        <div className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Backend Endpoint</div>
+                                        <div className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 font-mono text-[10px] text-emerald-400 flex items-center justify-between gap-2">
+                                            <span>POST /api/integrations/vicidial/ai-join</span>
+                                            <button onClick={() => { navigator.clipboard?.writeText(window.location.origin + "/api/integrations/vicidial/ai-join"); toast.success("Copied!"); }} className="text-zinc-600 hover:text-zinc-300 shrink-0">
+                                                <Copy className="w-3 h-3" />
+                                            </button>
+                                        </div>
+
+                                        <div className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mt-3">ViciDial Button URL Template</div>
+                                        <div className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 font-mono text-[10px] text-blue-400 break-all flex items-start justify-between gap-2">
+                                            <span>/vicidial-ai-join?token=BUTTON_TOKEN&user=[user]&conf_exten=[conf_exten]&phone=[phone_number]&phone_code=[phone_code]&lead_id=[lead_id]&first_name=[first_name]&last_name=[last_name]&campaign_id=[campaign]&list_id=[list_id]&ingroup=[group_id]&email=[email]</span>
+                                            <button onClick={() => { navigator.clipboard?.writeText(window.location.origin + "/vicidial-ai-join?token=BUTTON_TOKEN&user=[user]&conf_exten=[conf_exten]&phone=[phone_number]&phone_code=[phone_code]&lead_id=[lead_id]&first_name=[first_name]&last_name=[last_name]&campaign_id=[campaign]&list_id=[list_id]&ingroup=[group_id]&email=[email]"); toast.success("Copied!"); }} className="text-zinc-600 hover:text-zinc-300 shrink-0 mt-0.5">
+                                                <Copy className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                        <p className="text-[9px] text-zinc-600">Replace BUTTON_TOKEN with your VICIDIAL_AI_JOIN_TOKEN value. ViciDial replaces [user], [phone_number], etc. automatically.</p>
+                                    </div>
+
+                                    {/* Live test form */}
+                                    <div className="space-y-3">
+                                        <div className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Live Test AI JOIN</div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <label className="text-[9px] font-bold text-zinc-500 uppercase block mb-1">Phone (digits)</label>
+                                                <input type="text" value={aiJoinPhone} onChange={e => setAiJoinPhone(e.target.value)} placeholder="923312229050" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-emerald-500" />
+                                            </div>
+                                            <div>
+                                                <label className="text-[9px] font-bold text-zinc-500 uppercase block mb-1">Conf Exten (digits)</label>
+                                                <input type="text" value={aiJoinConf} onChange={e => setAiJoinConf(e.target.value)} placeholder="8600001" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-emerald-500" />
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-3 gap-2">
+                                            <div>
+                                                <label className="text-[9px] font-bold text-zinc-500 uppercase block mb-1">Lead ID</label>
+                                                <input type="text" value={aiJoinLeadId} onChange={e => setAiJoinLeadId(e.target.value)} placeholder="14" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-emerald-500" />
+                                            </div>
+                                            <div>
+                                                <label className="text-[9px] font-bold text-zinc-500 uppercase block mb-1">First Name</label>
+                                                <input type="text" value={aiJoinFirstName} onChange={e => setAiJoinFirstName(e.target.value)} placeholder="Hamza" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-emerald-500" />
+                                            </div>
+                                            <div>
+                                                <label className="text-[9px] font-bold text-zinc-500 uppercase block mb-1">Campaign</label>
+                                                <input type="text" value={aiJoinCampaign} onChange={e => setAiJoinCampaign(e.target.value)} placeholder="CAMP01" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-300 focus:outline-none focus:border-emerald-500" />
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            type="button"
+                                            disabled={aiJoining || !aiJoinPhone || !aiJoinConf}
+                                            onClick={async () => {
+                                                setAiJoining(true);
+                                                setAiJoinResult(null);
+                                                try {
+                                                    const res = await fetch("/api/integrations/vicidial/ai-join", {
+                                                        method: "POST",
+                                                        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.NEXT_PUBLIC_VICIDIAL_AI_JOIN_TOKEN || ""}` },
+                                                        body: JSON.stringify({ phone: aiJoinPhone, conf_exten: aiJoinConf, lead_id: aiJoinLeadId, first_name: aiJoinFirstName, campaign_id: aiJoinCampaign })
+                                                    });
+                                                    const data = await res.json();
+                                                    setAiJoinResult(data);
+                                                    if (data.success) toast.success("AI JOIN originated!");
+                                                    else toast.error(data.asterisk?.error || data.error || "AI JOIN failed");
+                                                } catch (err: any) {
+                                                    setAiJoinResult({ success: false, error: err?.message });
+                                                    toast.error("AI JOIN request failed");
+                                                } finally {
+                                                    setAiJoining(false);
+                                                }
+                                            }}
+                                            className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
+                                        >
+                                            {aiJoining ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                                            {aiJoining ? "Originating..." : "🤖 Test AI JOIN"}
+                                        </button>
+
+                                        {aiJoinResult && (
+                                            <div className={`rounded-xl p-3 border text-xs space-y-1 ${aiJoinResult.success ? "bg-emerald-950/20 border-emerald-900/30 text-emerald-400" : "bg-red-950/20 border-red-900/30 text-red-400"}`}>
+                                                <div className="font-bold">{aiJoinResult.success ? "✅ AI JOIN succeeded" : "❌ AI JOIN failed"}</div>
+                                                {aiJoinResult.asterisk && (
+                                                    <div className="font-mono text-[10px] opacity-80">Method: {aiJoinResult.asterisk.method} · Channel: {aiJoinResult.asterisk.channel}</div>
+                                                )}
+                                                {aiJoinResult.redis && (
+                                                    <div className="font-mono text-[10px] opacity-70">Redis: {aiJoinResult.redis.keys_written?.length} key(s) seeded</div>
+                                                )}
+                                                {(aiJoinResult.asterisk?.error || aiJoinResult.error) && (
+                                                    <div className="opacity-80">{aiJoinResult.asterisk?.error || aiJoinResult.error}</div>
+                                                )}
+                                                {aiJoinResult.request_id && (
+                                                    <div className="font-mono text-[9px] opacity-50">ref: {aiJoinResult.request_id}</div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

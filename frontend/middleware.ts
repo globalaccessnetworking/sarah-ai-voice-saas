@@ -10,7 +10,8 @@ const publicPaths = [
     "/api/auth/login",
     "/api/auth/reset-request",
     "/api/auth/reset-password",
-    "/widget", // Public chat widget route group
+    "/widget",           // Public chat widget route group
+    "/vicidial-ai-join", // Phase 10: ViciDial AI JOIN button page (token-protected, no SaaS session needed)
 ];
 
 export function middleware(request: NextRequest) {

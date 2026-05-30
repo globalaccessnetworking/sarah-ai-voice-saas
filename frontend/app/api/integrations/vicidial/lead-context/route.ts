@@ -1,10 +1,32 @@
-import { NextRequest, NextResponse } from "next/server";
-import redis, { ensureRedisConnected, getSanitizedRedisTarget, isRedisClientConnected } from "@/lib/redis";
+/**
+ * POST /api/integrations/vicidial/lead-context
+ *
+ * Webhook endpoint called by ViciDial BEFORE transferring a call to AI.
+ * Caches the lead's context in Redis so the AI worker can do a lookup_hit
+ * when it joins the room.
+ *
+ * Authentication: Authorization: Bearer <VICIDIAL_WEBHOOK_TOKEN>
+ *                 or x-vicidial-token header
+ *
+ * Response shape is unchanged from before the Phase 10 refactor.
+ * Internal seeding logic is now shared with /api/integrations/vicidial/ai-join
+ * via frontend/lib/vicidial-context.ts.
+ */
 
-// Safe authentication helper
+import { NextRequest, NextResponse } from "next/server";
+import { isRedisClientConnected, getSanitizedRedisTarget, ensureRedisConnected } from "@/lib/redis";
+import redis from "@/lib/redis";
+import {
+    normalizePhone,
+    buildContextPayload,
+    seedVicidialContext,
+    VICIDIAL_CONTEXT_TTL,
+} from "@/lib/vicidial-context";
+
+// Safe authentication helper (identical logic to ai-join route)
 function isAuthorized(req: NextRequest): boolean {
     const configToken = process.env.VICIDIAL_WEBHOOK_TOKEN || "vicidial_secure_token_2026";
-    
+
     // 1. Check Bearer Token
     const authHeader = req.headers.get("Authorization");
     if (authHeader && authHeader.startsWith("Bearer ")) {
@@ -22,9 +44,9 @@ function isAuthorized(req: NextRequest): boolean {
     const allowedIpsEnv = process.env.VICIDIAL_ALLOWED_IPS;
     if (allowedIpsEnv) {
         const allowedIps = allowedIpsEnv.split(",").map(ip => ip.trim());
-        const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0].trim() || 
+        const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0].trim() ||
                          req.headers.get("x-real-ip")?.trim();
-        
+
         if (clientIp && allowedIps.includes(clientIp)) {
             return true;
         }
@@ -46,132 +68,29 @@ export async function POST(req: NextRequest) {
 
         const body = await req.json();
 
-        // 2. Input Validation
+        // 2. Validate phone (uses shared normalizer)
         const phone = body.phone || body.phone_number;
-        if (!phone) {
+        const cleanPhone = normalizePhone(phone, body.phone_number, body.phone_code);
+        if (!cleanPhone) {
             return NextResponse.json(
-                { error: "phone or phone_number is required" },
+                { error: "phone or phone_number is required and must be 7–15 digits" },
                 { status: 400 }
             );
         }
 
-        // Clean phone number (strip spaces, dashes, parentheses, leading plus)
-        const cleanPhone = String(phone).replace(/[\+\s\-\(\)]/g, "");
-        if (!cleanPhone || cleanPhone.length < 7) {
-            return NextResponse.json(
-                { error: "Invalid phone number format" },
-                { status: 400 }
-            );
-        }
+        // 3. Build normalized context payload (shared helper)
+        const contextPayload = buildContextPayload(body, cleanPhone);
 
-        // 3. Preserved Fields & Normalization
-        const vicidialLeadId = String(body.leadId || body.vicidial_lead_id || "").trim();
-        const vicidialCampaignId = String(body.vicidialCampaignId || body.vicidial_campaign_id || "").trim();
-        const vicidialListId = String(body.vicidialListId || body.vicidial_list_id || "").trim();
-        const vicidialIngroup = String(body.vicidialIngroup || body.vicidial_ingroup || "").trim();
-        const callUniqueid = String(body.callUniqueid || body.call_uniqueid || "").trim();
-        const vendorLeadCode = String(body.vendorLeadCode || body.vendor_lead_code || "").trim();
-        const firstName = String(body.firstName || body.first_name || "").trim();
-        const lastName = String(body.lastName || body.last_name || "").trim();
-        const address1 = String(body.address1 || "").trim();
-        const address2 = String(body.address2 || "").trim();
-        const address3 = String(body.address3 || "").trim();
-        const city = String(body.city || "").trim();
-        const state = String(body.state || "").trim();
-        const province = String(body.province || "").trim();
-        const postalCode = String(body.postalCode || body.postal_code || "").trim();
-        const email = String(body.email || "").trim();
-        const securityPhrase = String(body.securityPhrase || body.security_phrase || "").trim();
-        const comments = String(body.comments || "").trim();
-        
-        // Dynamic custom fields payload - supports leadData, lead_data, customFields, or custom_fields
-        const rawCustomFields = body.custom_fields || body.customFields || body.leadData || body.lead_data || {};
-        const leadData: Record<string, any> = {};
-
-        // Merge standard custom fields with normalized keys
-        if (typeof rawCustomFields === "object" && rawCustomFields !== null) {
-            Object.entries(rawCustomFields).forEach(([k, v]) => {
-                // Safe normalized key (trimmed, lower_snake_case)
-                const cleanKey = String(k).trim().toLowerCase().replace(/[-\s]/g, "_");
-                leadData[cleanKey] = v;
-                // Also retain original key format to support exact matches
-                if (cleanKey !== k) {
-                    leadData[k] = v;
-                }
-            });
-        }
-
-        // Store original ViciDial parameters inside lead_data too
-        leadData.vicidial_lead_id = vicidialLeadId;
-        leadData.vicidial_campaign_id = vicidialCampaignId;
-        leadData.vicidial_list_id = vicidialListId;
-        leadData.vicidial_ingroup = vicidialIngroup;
-        leadData.vicidial_call_uniqueid = callUniqueid;
-        leadData.vendor_lead_code = vendorLeadCode;
-        leadData.first_name = firstName;
-        leadData.last_name = lastName;
-        leadData.address1 = address1;
-        leadData.address2 = address2;
-        leadData.address3 = address3;
-        leadData.city = city;
-        leadData.state = state;
-        leadData.province = province;
-        leadData.postal_code = postalCode;
-        leadData.email = email;
-        leadData.security_phrase = securityPhrase;
-        leadData.comments = comments;
-
-        // Structured normalized context
-        const contextPayload = {
-            phone: cleanPhone,
-            phone_number: cleanPhone,
-            contact_name: `${firstName} ${lastName}`.trim() || "Customer",
-            first_name: firstName,
-            last_name: lastName,
-            vicidial_lead_id: vicidialLeadId,
-            vicidial_campaign_id: vicidialCampaignId,
-            vicidial_list_id: vicidialListId,
-            vicidial_ingroup: vicidialIngroup,
-            vicidial_call_uniqueid: callUniqueid,
-            vendor_lead_code: vendorLeadCode,
-            custom_fields: rawCustomFields,
-            lead_data: leadData,
-            source: "vicidial",
-            timestamp: new Date().toISOString()
-        };
-
-        const serialized = JSON.stringify(contextPayload);
-        const ttlSeconds = 3600; // 1-hour transient TTL
-        
-        // Ensure Redis connection is up
+        // 4. Ensure Redis connected
         await ensureRedisConnected();
-        
-        // 4. Save to Redis under multiple lookup keys for collision protection
-        const keysWritten: string[] = [];
 
-        // Key 1: Phone Fallback
-        const phoneKey = `vicidial_context:phone:${cleanPhone}`;
-        await redis.set(phoneKey, serialized, { EX: ttlSeconds });
-        keysWritten.push(phoneKey);
+        // 5. Seed Redis (shared helper — same keys as ai-join)
+        const seedResult = await seedVicidialContext(contextPayload, VICIDIAL_CONTEXT_TTL);
 
-        // Key 2: Unique call ID (if provided)
-        if (callUniqueid) {
-            const uniqueidKey = `vicidial_context:uniqueid:${callUniqueid}`;
-            await redis.set(uniqueidKey, serialized, { EX: ttlSeconds });
-            keysWritten.push(uniqueidKey);
-        }
-
-        // Key 3: ViciDial Lead ID (if provided)
-        if (vicidialLeadId) {
-            const leadKey = `vicidial_context:lead:${vicidialLeadId}`;
-            await redis.set(leadKey, serialized, { EX: ttlSeconds });
-            keysWritten.push(leadKey);
-        }
-
-        // 5. Verification step: Check TTL of the primary written key (phoneKey)
+        // 6. Verify the primary key was written with a valid TTL
         let ttlCheck = -2;
         try {
-            ttlCheck = await redis.ttl(phoneKey);
+            ttlCheck = await redis.ttl(`vicidial_context:phone:${cleanPhone}`);
         } catch (ttlErr) {
             console.error("[VICIDIAL_CONTEXT] TTL verification check threw error:", ttlErr);
         }
@@ -189,13 +108,14 @@ export async function POST(req: NextRequest) {
             }, { status: 500 });
         }
 
-        console.log(`[VICIDIAL_CONTEXT] Saved transient context keys=${keysWritten.join(", ")} verified_ttl=${ttlCheck}s target=${getSanitizedRedisTarget()}`);
+        console.log(`[VICIDIAL_CONTEXT] Saved transient context keys=${seedResult.keys_written.join(", ")} verified_ttl=${ttlCheck}s target=${getSanitizedRedisTarget()}`);
 
+        // Response shape is identical to pre-Phase-10 (fully backwards compatible)
         return NextResponse.json({
             success: true,
             message: "Transient ViciDial lead context saved successfully.",
-            keys_written: keysWritten,
-            ttl: ttlSeconds,
+            keys_written: seedResult.keys_written,
+            ttl: VICIDIAL_CONTEXT_TTL,
             redis_target: getSanitizedRedisTarget(),
             data: contextPayload
         });
